@@ -2,9 +2,10 @@ port module Main exposing (main)
 
 import Browser exposing (Document)
 import Browser.Dom as Dom
-import Browser.Events exposing (onAnimationFrameDelta, onKeyDown)
+import Browser.Events exposing (onAnimationFrameDelta, onKeyDown, onResize)
 import Css
 import Css.Transitions as Transitions
+import Debug
 import Dict exposing (Dict)
 import Html.Styled as Html exposing (Html)
 import Html.Styled.Attributes as Attrs
@@ -38,11 +39,27 @@ type alias Model =
     , showAbout : Bool
     , currentZone : Maybe Zone
     , themeColor : Float
+    , screenSize : ScreenSize
+    , isVertical : Bool
     }
 
 
 type alias Thought =
     String
+
+
+type alias Flags =
+    { priorThoughts : List ( Thought, Posix )
+    , now : Int
+    , width : Int
+    , height : Int
+    }
+
+
+type ScreenSize
+    = Small
+    | Medium
+    | Large
 
 
 type Msg
@@ -63,6 +80,7 @@ type Msg
     | HideAbout
     | SetZone Zone
     | UpdateThemeColor Float
+    | UpdateSizeAndOrientation Int Int
 
 
 
@@ -72,16 +90,24 @@ type Msg
 init : Value -> ( Model, Cmd Msg )
 init flags =
     let
-        ( priorThoughts, now ) =
-            flagsDecoder flags
+        { priorThoughts, now, width, height } =
+            Debug.log "init" <| flagsDecoder flags
     in
-    ( { oldThoughts = priorThoughts
+    ( { oldThoughts =
+            case priorThoughts of
+                [] ->
+                    [ ( "Welcome to Idea Stream", Time.millisToPosix now ) ]
+
+                _ ->
+                    priorThoughts
       , currentThought = Nothing
       , attemptPurge = False
       , showMenu = False
       , showAbout = False
       , currentZone = Nothing
-      , themeColor = now
+      , themeColor = now |> modBy 360 |> toFloat
+      , screenSize = calculateScreenSize width
+      , isVertical = height > width
       }
     , Cmd.batch
         [ focusNewThoughtButton
@@ -90,22 +116,46 @@ init flags =
     )
 
 
-flagsDecoder : Value -> ( List ( Thought, Posix ), Float )
+calculateScreenSize : Int -> ScreenSize
+calculateScreenSize width =
+    let
+        carl =
+            Debug.log "width" width
+    in
+    if carl > 1200 then
+        Large
+
+    else if carl > 900 then
+        Medium
+
+    else
+        Small
+
+
+flagsDecoder : Value -> Flags
 flagsDecoder val =
     case Decode.decodeValue decodeFlags val of
-        Ok thoughts ->
-            thoughts
+        Ok flags ->
+            flags
 
         Err _ ->
-            ( [], 0 )
+            { priorThoughts = [], now = 0, width = 0, height = 0 }
 
 
-decodeFlags : Decoder ( List ( Thought, Posix ), Float )
+decodeFlags : Decoder Flags
 decodeFlags =
-    Decode.map2
-        (\thoughts now -> ( Maybe.withDefault [] thoughts, now |> modBy 360 |> toFloat ))
+    Decode.map4
+        (\maybeThoughts now width height ->
+            { priorThoughts = Maybe.withDefault [] maybeThoughts
+            , now = now
+            , width = width
+            , height = height
+            }
+        )
         (Decode.maybe (Decode.field "priorThoughts" (Decode.list decodeThought)))
         (Decode.field "now" Decode.int)
+        (Decode.field "width" Decode.int)
+        (Decode.field "height" Decode.int)
 
 
 decodeThought : Decoder ( Thought, Posix )
@@ -128,6 +178,7 @@ subscriptions _ =
         [ Time.every (15 * 1000) TryStoringThought
         , onKeyDown decodeKeyDown
         , onAnimationFrameDelta UpdateThemeColor
+        , onResize UpdateSizeAndOrientation
         ]
 
 
@@ -191,6 +242,15 @@ update msg model =
     case msg of
         NoOp ->
             ( model, Cmd.none )
+
+        UpdateSizeAndOrientation width height ->
+            let
+                nextSize =
+                    Debug.log "nextSize" <| calculateScreenSize width
+            in
+            ( { model | screenSize = nextSize, isVertical = height > width }
+            , Cmd.none
+            )
 
         UpdateThemeColor delta ->
             let
@@ -382,26 +442,52 @@ lightColor themeColor =
 
 
 view : Model -> Document Msg
-view ({ showMenu, themeColor } as model) =
+view ({ themeColor, screenSize, isVertical } as model) =
     { title = "Idea Stream"
     , body =
         [ Html.toUnstyled <|
-            viewIdeaStream model
-        , Html.toUnstyled <|
-            viewMenuButton
-                { open = showMenu
-                , openHandler = ShowMenu
-                , closeHandler = HideMenu
-                , color = lightColor themeColor
-                }
-        , Html.toUnstyled <|
-            viewMenu model
-        , Html.toUnstyled <|
-            viewPurgeAttempt model
-        , Html.toUnstyled <|
-            viewAbout model
+            case screenSize of
+                Small ->
+                    if isVertical then
+                        viewApp model
+
+                    else
+                        Html.div
+                            []
+                            [ Html.text "Please rotate vertically" ]
+
+                Medium ->
+                    viewApp model
+
+                Large ->
+                    viewApp model
         ]
     }
+
+
+viewApp : Model -> Html Msg
+viewApp ({ showMenu, themeColor, screenSize } as model) =
+    Html.div
+        [ Attrs.css
+            [ Css.fontSize <|
+                Css.rem <|
+                    case screenSize of
+                        Small ->
+                            3
+
+                        Medium ->
+                            2
+
+                        Large ->
+                            1
+            ]
+        ]
+        [ viewIdeaStream model
+        , viewMenuButton model
+        , viewMenu model
+        , viewPurgeAttempt model
+        , viewAbout model
+        ]
 
 
 viewModal : Float -> List (Html Msg) -> Html Msg
@@ -433,7 +519,7 @@ viewModal themeColor children =
 
 
 viewAbout : Model -> Html Msg
-viewAbout { themeColor, showAbout } =
+viewAbout { themeColor, showAbout, screenSize } =
     if showAbout then
         viewModal themeColor
             [ Html.span
@@ -459,7 +545,7 @@ If you'd like to see the code, it can be found at """
                 ]
                 [ Html.button
                     [ Attrs.css
-                        (defaultButtonStyle themeColor)
+                        (defaultButtonStyle screenSize themeColor)
                     , Events.onClick HideAbout
                     , Attrs.id "hideAboutButton"
                     ]
@@ -471,25 +557,47 @@ If you'd like to see the code, it can be found at """
         Html.text ""
 
 
-viewMenuButton : { open : Bool, openHandler : Msg, closeHandler : Msg, color : Css.Color } -> Html Msg
-viewMenuButton { open, openHandler, closeHandler, color } =
+viewMenuButton : Model -> Html Msg
+viewMenuButton { showMenu, themeColor, screenSize } =
     Html.button
         [ Events.onClick <|
-            if open then
-                closeHandler
+            if showMenu then
+                HideMenu
 
             else
-                openHandler
+                ShowMenu
         , Attrs.css
             [ Css.position Css.absolute
-            , Css.bottom <| Css.rem 1
-            , Css.right <| Css.rem 1
+            , Css.top <|
+                Css.rem <|
+                    case screenSize of
+                        Large ->
+                            1
+
+                        _ ->
+                            4
+            , Css.right <|
+                Css.rem <|
+                    case screenSize of
+                        Large ->
+                            1
+
+                        _ ->
+                            4
             , Css.backgroundColor darkColor
             , Css.border <| Css.px 0
             , Css.cursor Css.pointer
             , Css.borderRadius <| Css.rem 50
             , Css.padding <| Css.rem 1
             , Css.overflow Css.visible
+            , Css.transform <|
+                Css.scale <|
+                    case screenSize of
+                        Small ->
+                            2
+
+                        _ ->
+                            1
             ]
         ]
         [ Html.div
@@ -503,13 +611,13 @@ viewMenuButton { open, openHandler, closeHandler, color } =
                 [ Attrs.css
                     [ Css.width <| Css.px 35
                     , Css.height <| Css.px 5
-                    , Css.backgroundColor color
+                    , Css.backgroundColor <| lightColor themeColor
                     , Css.margin2 (Css.px 6) (Css.px 0)
                     , Css.borderRadius <| Css.px 10
 
                     -- This bar only
                     , Css.transforms <|
-                        if open then
+                        if showMenu then
                             [ Css.rotate <| Css.deg -45
                             , Css.translate2 (Css.px -9) (Css.px 6)
                             ]
@@ -525,14 +633,14 @@ viewMenuButton { open, openHandler, closeHandler, color } =
                 [ Attrs.css
                     [ Css.width <| Css.px 35
                     , Css.height <| Css.px 5
-                    , Css.backgroundColor color
+                    , Css.backgroundColor <| lightColor themeColor
                     , Css.margin2 (Css.px 6) (Css.px 0)
                     , Css.borderRadius <| Css.px 10
 
                     -- This bar only
                     , Css.opacity <|
                         Css.num <|
-                            if open then
+                            if showMenu then
                                 0
 
                             else
@@ -544,13 +652,13 @@ viewMenuButton { open, openHandler, closeHandler, color } =
                 [ Attrs.css
                     [ Css.width <| Css.px 35
                     , Css.height <| Css.px 5
-                    , Css.backgroundColor color
+                    , Css.backgroundColor <| lightColor themeColor
                     , Css.margin2 (Css.px 6) (Css.px 0)
                     , Css.borderRadius <| Css.px 10
 
                     -- This bar only
                     , Css.transforms <|
-                        if open then
+                        if showMenu then
                             [ Css.rotate <| Css.deg 45
                             , Css.translate2 (Css.px -8) (Css.px -8)
                             ]
@@ -567,13 +675,20 @@ viewMenuButton { open, openHandler, closeHandler, color } =
 
 
 viewMenu : Model -> Html Msg
-viewMenu { showMenu, themeColor } =
+viewMenu { showMenu, themeColor, screenSize } =
     if showMenu then
         Html.div
             [ Attrs.css
                 [ Css.position Css.absolute
-                , Css.bottom <| Css.rem 7
+                , Css.top <| Css.rem <|
+                    case screenSize of
+                        Small ->
+                            13
+
+                        _ ->
+                            7
                 , Css.right <| Css.rem 1
+
                 -- , Css.width <| Css.rem 15
                 , Css.border3 (Css.px 1) Css.solid (Css.rgb 0 0 0)
                 , Css.backgroundColor <| lightColor themeColor
@@ -590,7 +705,7 @@ viewMenu { showMenu, themeColor } =
                     []
                     [ Html.button
                         [ Attrs.css
-                            (defaultButtonStyle themeColor)
+                            (defaultButtonStyle screenSize themeColor)
                         , Events.onClick AttemptPurge
                         ]
                         [ Html.text "Purge?" ]
@@ -601,7 +716,7 @@ viewMenu { showMenu, themeColor } =
                     ]
                     [ Html.button
                         [ Attrs.css
-                            (defaultButtonStyle themeColor)
+                            (defaultButtonStyle screenSize themeColor)
                         , Events.onClick ShowAbout
                         ]
                         [ Html.text "About" ]
@@ -614,7 +729,7 @@ viewMenu { showMenu, themeColor } =
 
 
 viewPurgeAttempt : Model -> Html Msg
-viewPurgeAttempt { attemptPurge, themeColor } =
+viewPurgeAttempt { attemptPurge, themeColor, screenSize } =
     if attemptPurge then
         viewModal themeColor
             [ Html.p
@@ -647,13 +762,13 @@ viewPurgeAttempt { attemptPurge, themeColor } =
                 ]
                 [ Html.button
                     [ Attrs.css
-                        (defaultButtonStyle themeColor)
+                        (defaultButtonStyle screenSize themeColor)
                     , Events.onClick ExecutePurge
                     ]
                     [ Html.text "Purge" ]
                 , Html.button
                     [ Attrs.css
-                        (defaultButtonStyle themeColor
+                        (defaultButtonStyle screenSize themeColor
                             ++ [ Css.marginLeft <| Css.rem 1 ]
                         )
                     , Events.onClick CancelPurge
@@ -667,10 +782,22 @@ viewPurgeAttempt { attemptPurge, themeColor } =
         Html.text ""
 
 
-defaultButtonStyle : Float -> List Css.Style
-defaultButtonStyle themeColor =
-    [ Css.fontSize <| Css.rem 1.2
-    , Css.padding2 (Css.rem 0.5) (Css.rem 1)
+defaultButtonStyle : ScreenSize -> Float -> List Css.Style
+defaultButtonStyle screenSize themeColor =
+    [ Css.fontSize <|
+        Css.rem <|
+            case screenSize of
+                Large ->
+                    1.2
+
+                _ ->
+                    4
+    , case screenSize of
+        Large ->
+            Css.padding2 (Css.rem 0.5) (Css.rem 1)
+
+        _ ->
+            Css.padding2 (Css.rem 2) (Css.rem 4)
     , Css.backgroundColor darkColor
     , Css.color <| lightColor themeColor
     , Css.cursor Css.pointer
@@ -683,7 +810,7 @@ backgroundGradient themeColor =
 
 
 viewIdeaStream : Model -> Html Msg
-viewIdeaStream { oldThoughts, currentThought, currentZone, themeColor } =
+viewIdeaStream { oldThoughts, currentThought, currentZone, themeColor, screenSize } =
     Html.div
         [ Attrs.css
             [ Css.position Css.absolute
@@ -703,14 +830,14 @@ viewIdeaStream { oldThoughts, currentThought, currentZone, themeColor } =
             [ Attrs.css
                 [ Css.color <| lightColor themeColor ]
             ]
-            [ Html.text "Let the ideas flow" ]
-        , viewThoughts oldThoughts currentZone
-        , viewCurrentThought themeColor currentThought
+            [ Html.text "Thoughts" ]
+        , viewThoughts oldThoughts currentZone screenSize
+        , viewCurrentThought screenSize themeColor currentThought
         ]
 
 
-viewThoughts : List ( Thought, Posix ) -> Maybe Zone -> Html Msg
-viewThoughts oldThoughts maybeZone =
+viewThoughts : List ( Thought, Posix ) -> Maybe Zone -> ScreenSize -> Html Msg
+viewThoughts oldThoughts maybeZone screenSize =
     KeyedHtml.ul
         [ Attrs.css
             [ Css.displayFlex
@@ -724,15 +851,20 @@ viewThoughts oldThoughts maybeZone =
             ]
         ]
     <|
-        List.map (viewOldThought maybeZone) oldThoughts
+        List.map (viewOldThought maybeZone screenSize) oldThoughts
 
 
-viewOldThought : Maybe Zone -> ( Thought, Posix ) -> ( String, Html msg )
-viewOldThought maybeZone ( thoughts, createdAt ) =
+viewOldThought : Maybe Zone -> ScreenSize -> ( Thought, Posix ) -> ( String, Html msg )
+viewOldThought maybeZone screenSize ( thoughts, createdAt ) =
     ( createdAt |> Time.posixToMillis |> String.fromInt
     , Html.li
         [ Attrs.css
-            [ Css.width <| Css.rem 30
+            [ case screenSize of
+                Large ->
+                    Css.width <| Css.rem 30
+
+                _ ->
+                    Css.width <| Css.pct 100
             , Css.lastChild
                 [ Css.padding2 (Css.rem 1) (Css.rem 0)
                 , Css.paddingTop <| Css.rem 10
@@ -775,7 +907,7 @@ viewOldThought maybeZone ( thoughts, createdAt ) =
                             ++ ", "
                             ++ String.fromInt hour
                             ++ ":"
-                            ++ String.fromInt minute
+                            ++ (String.padLeft 2 '0' <| String.fromInt minute)
             , Html.div
                 [ Attrs.css
                     [ Css.borderBottom3 (Css.px 1) Css.solid darkColor
@@ -835,15 +967,20 @@ stringFromMonth month =
             "Dec"
 
 
-viewCurrentThought : Float -> Maybe ( Thought, Posix ) -> Html Msg
-viewCurrentThought themeColor maybeThought =
+viewCurrentThought : ScreenSize -> Float -> Maybe ( Thought, Posix ) -> Html Msg
+viewCurrentThought screenSize themeColor maybeThought =
     Html.section
         [ Attrs.css
             [ Css.height <| Css.rem 10
             , Css.displayFlex
             , Css.alignItems Css.center
             , Css.justifyContent Css.center
-            , Css.width <| Css.rem 30
+            , case screenSize of
+                Large ->
+                    Css.width <| Css.rem 30
+
+                _ ->
+                    Css.width <| Css.pct 100
             , Css.marginBottom <| Css.rem 1
             ]
         ]
@@ -852,7 +989,7 @@ viewCurrentThought themeColor maybeThought =
                 Html.button
                     [ Events.onClick CreateThought
                     , Attrs.id "newThoughtButton"
-                    , Attrs.css <| defaultButtonStyle themeColor
+                    , Attrs.css <| defaultButtonStyle screenSize themeColor
                     ]
                     [ Html.text "New Thought" ]
 
@@ -863,12 +1000,38 @@ viewCurrentThought themeColor maybeThought =
                     , Events.onInput UpdateThought
                     , Attrs.css
                         [ Css.height <| Css.calc (Css.pct 100) Css.minus (Css.rem 2)
-                        , Css.width <| Css.pct 100
+                        , case screenSize of
+                            Large ->
+                                Css.width <| Css.pct 100
+
+                            _ ->
+                                Css.width <| Css.rem 40
                         , Css.resize Css.none
-                        , Css.fontSize <| Css.rem 1
+                        , Css.fontSize <|
+                            Css.rem <|
+                                case screenSize of
+                                    Large ->
+                                        1
+
+                                    Medium ->
+                                        2
+
+                                    Small ->
+                                        3
                         , Css.padding <| Css.rem 1
                         ]
                     , Attrs.rows (String.indices thought "\n" |> List.length |> (+) 1)
                     ]
                     []
+        , case maybeThought of
+            Nothing ->
+                Html.text ""
+
+            Just _ ->
+                Html.button
+                    [ Events.onClick StoreOrCreateThought
+                    , Attrs.id "storeThoughtButton"
+                    , Attrs.css <| defaultButtonStyle screenSize themeColor
+                    ]
+                    [ Html.text "Save" ]
         ]

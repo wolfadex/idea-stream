@@ -13,6 +13,8 @@ const app = Elm.Main.init({
   flags: {
     priorThoughts,
     now: new Date().getTime(),
+    width: window.outerWidth,
+    height: window.outerHeight,
   },
 });
 
