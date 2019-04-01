@@ -5,7 +5,6 @@ import Browser.Dom as Dom
 import Browser.Events exposing (onAnimationFrameDelta, onKeyDown)
 import Css
 import Css.Transitions as Transitions
-import Debug
 import Dict exposing (Dict)
 import Html.Styled as Html exposing (Html)
 import Html.Styled.Attributes as Attrs
@@ -74,7 +73,7 @@ init : Value -> ( Model, Cmd Msg )
 init flags =
     let
         ( priorThoughts, now ) =
-            Debug.log "init" <| flagsDecoder flags
+            flagsDecoder flags
     in
     ( { oldThoughts = priorThoughts
       , currentThought = Nothing
