@@ -5,6 +5,7 @@ import Browser.Dom as Dom
 import Browser.Events exposing (onAnimationFrame, onKeyDown, onResize)
 import Css
 import Css.Transitions as Transitions
+import Debug
 import Dict exposing (Dict)
 import Html.Styled as Html exposing (Html)
 import Html.Styled.Attributes as Attrs
@@ -46,6 +47,8 @@ type alias Model =
     , finding : ( Bool, String )
     , currentTime : Posix
     , menuIsOpen : Bool
+    , userColor : PrimaryColor
+    , showColorPicker : Bool
     }
 
 
@@ -58,6 +61,7 @@ type alias Flags =
     , now : Posix
     , width : Int
     , height : Int
+    , colorChoice : PrimaryColor
     }
 
 
@@ -86,6 +90,113 @@ type Msg
     | NewSearch String
     | TimeTick Posix
     | SetMenuOpen Bool
+    | SetUserColor PrimaryColor
+    | ShowColorPicker
+    | HideColorPicker
+
+
+type PrimaryColor
+    = Blue
+    | Aqua
+    | Teal
+    | Olive
+    | Green
+    | Orange
+    | Red
+    | Maroon
+    | Fuchsia
+    | Purple
+    | Gray
+
+
+listOfColors : List PrimaryColor
+listOfColors =
+    [ Blue
+    , Aqua
+    , Teal
+    , Olive
+    , Green
+    , Orange
+    , Red
+    , Maroon
+    , Fuchsia
+    , Purple
+    , Gray
+    ]
+
+
+toCssColor : PrimaryColor -> Css.Color
+toCssColor pColor =
+    case pColor of
+        Blue ->
+            Css.hex "#0074D9"
+
+        Aqua ->
+            Css.hex "#7FDBFF"
+
+        Teal ->
+            Css.hex "#39CCCC"
+
+        Olive ->
+            Css.hex "#3D9970"
+
+        Green ->
+            Css.hex "#2ECC40"
+
+        Orange ->
+            Css.hex "#FF851B"
+
+        Red ->
+            Css.hex "#FF4136"
+
+        Maroon ->
+            Css.hex "#85144b"
+
+        Fuchsia ->
+            Css.hex "#F012BE"
+
+        Purple ->
+            Css.hex "#B10DC9"
+
+        Gray ->
+            Css.hex "#AAAAAA"
+
+
+primaryColorToString : PrimaryColor -> String
+primaryColorToString pColor =
+    case pColor of
+        Blue ->
+            "Blue"
+
+        Aqua ->
+            "Aqua"
+
+        Teal ->
+            "Teal"
+
+        Olive ->
+            "Olive"
+
+        Green ->
+            "Green"
+
+        Orange ->
+            "Orange"
+
+        Red ->
+            "Red"
+
+        Maroon ->
+            "Maroon"
+
+        Fuchsia ->
+            "Fuchsia"
+
+        Purple ->
+            "Purple"
+
+        Gray ->
+            "Gray"
 
 
 
@@ -95,13 +206,13 @@ type Msg
 init : Value -> ( Model, Cmd Msg )
 init flags =
     let
-        { priorThoughts, now, width, height } =
+        { priorThoughts, now, width, height, colorChoice } =
             flagsDecoder flags
     in
     ( { oldThoughts =
             case priorThoughts of
                 [] ->
-                    [ ( "Welcome to " ++ appName, now ) ]
+                    [ ( "Welcome to \"" ++ appName ++ "\"", now ) ]
 
                 _ ->
                     priorThoughts
@@ -114,6 +225,8 @@ init flags =
       , finding = ( False, "" )
       , currentTime = now
       , menuIsOpen = False
+      , userColor = colorChoice
+      , showColorPicker = False
       }
     , Task.perform SetZone Time.here
     )
@@ -138,23 +251,71 @@ flagsDecoder val =
             flags
 
         Err _ ->
-            { priorThoughts = [], now = Time.millisToPosix 0, width = 0, height = 0 }
+            { priorThoughts = []
+            , now = Time.millisToPosix 0
+            , width = 0
+            , height = 0
+            , colorChoice = Green
+            }
 
 
 decodeFlags : Decoder Flags
 decodeFlags =
-    Decode.map4
-        (\maybeThoughts now width height ->
+    Decode.map5
+        (\maybeThoughts now width height maybeColor ->
             { priorThoughts = Maybe.withDefault [] maybeThoughts
             , now = Time.millisToPosix now
             , width = width
             , height = height
+            , colorChoice = Maybe.withDefault Green maybeColor
             }
         )
         (Decode.maybe (Decode.field "priorThoughts" (Decode.list decodeThought)))
         (Decode.field "now" Decode.int)
         (Decode.field "width" Decode.int)
         (Decode.field "height" Decode.int)
+        (Decode.maybe (Decode.field "colorChoice" Decode.string |> Decode.andThen decodeColor))
+
+
+decodeColor : String -> Decoder PrimaryColor
+decodeColor str =
+    Decode.succeed <|
+        case str of
+            "Blue" ->
+                Blue
+
+            "Aqua" ->
+                Aqua
+
+            "Teal" ->
+                Teal
+
+            "Olive" ->
+                Olive
+
+            "Green" ->
+                Green
+
+            "Orange" ->
+                Orange
+
+            "Red" ->
+                Red
+
+            "Maroon" ->
+                Maroon
+
+            "Fuchsia" ->
+                Fuchsia
+
+            "Purple" ->
+                Purple
+
+            "Gray" ->
+                Gray
+
+            _ ->
+                Green
 
 
 decodeThought : Decoder ( Thought, Posix )
@@ -228,6 +389,9 @@ encodeThought ( thought, time ) =
 port purgeThoughts : () -> Cmd msg
 
 
+port saveColorChoice : String -> Cmd msg
+
+
 
 ---- UPDATE ----
 
@@ -237,6 +401,19 @@ update msg model =
     case msg of
         NoOp ->
             ( model, Cmd.none )
+
+        ShowColorPicker ->
+            ( { model | showColorPicker = True, menuIsOpen = False }
+            , focusElement "hideColorPickerButton"
+            )
+
+        HideColorPicker ->
+            ( { model | showColorPicker = False }, focusThoughtBox )
+
+        SetUserColor color ->
+            ( { model | userColor = color }
+            , saveColorChoice <| primaryColorToString color
+            )
 
         SetMenuOpen open ->
             ( { model | menuIsOpen = open }, Cmd.none )
@@ -396,9 +573,10 @@ secondaryColor =
     Css.rgb 255 255 255
 
 
-primaryColor : Css.Color
-primaryColor =
-    Css.rgb 255 200 200
+
+-- primaryColor : Css.Color
+-- primaryColor =
+--     Css.rgb 255 200 200
 
 
 darkColor : Css.Color
@@ -431,7 +609,7 @@ view ({ screenSize, isVertical } as model) =
 
 
 viewApp : Model -> Html Msg
-viewApp ({ screenSize } as model) =
+viewApp ({ screenSize, userColor } as model) =
     Html.div
         [ Attrs.css
             [ Css.fontSize <|
@@ -450,7 +628,7 @@ viewApp ({ screenSize } as model) =
             , Css.bottom <| Css.rem 0
             , Css.left <| Css.rem 0
             , Css.right <| Css.rem 0
-            , backgroundGradient
+            , backgroundGradient userColor
             , Css.fontFamily Css.sansSerif
             , Css.color darkColor
             ]
@@ -466,7 +644,7 @@ viewApp ({ screenSize } as model) =
             ]
             [ Html.h1
                 [ Attrs.css
-                    [ Css.color primaryColor
+                    [ Css.color <| toCssColor userColor
                     ]
                 ]
                 [ Html.text appName ]
@@ -496,11 +674,58 @@ viewApp ({ screenSize } as model) =
             ]
         , viewPurgeAttempt model
         , viewAbout model
+        , viewColorPicker model
         ]
 
 
+viewColorPicker : Model -> Html Msg
+viewColorPicker { showColorPicker, screenSize, userColor } =
+    if showColorPicker then
+        viewModal userColor
+            screenSize
+            [ Html.span
+                []
+                [ Html.text "Choose a Color"
+                ]
+            , Html.br [] []
+            , Html.ul
+                [ Attrs.css
+                    [ Css.listStyle Css.none ]
+                ]
+                (listOfColors
+                    |> List.map
+                        (\color ->
+                            Html.li
+                                [ Attrs.css
+                                    [ Css.marginTop <| Css.rem 1 ]
+                                ]
+                                [ Html.button
+                                    [ Attrs.css
+                                        (defaultButtonStyle userColor screenSize
+                                            ++ [ Css.color <| toCssColor color
+                                               ]
+                                        )
+                                    , Events.onClick <| SetUserColor color
+                                    ]
+                                    [ Html.text <| primaryColorToString color ]
+                                ]
+                        )
+                )
+            , Html.button
+                [ Attrs.css <|
+                    defaultButtonStyle userColor screenSize
+                , Events.onClick HideColorPicker
+                , Attrs.id "hideColorPickerButton"
+                ]
+                [ Html.text "Keep Selected Color" ]
+            ]
+
+    else
+        emptyHtml
+
+
 viewMenu : Model -> Html Msg
-viewMenu ({ menuIsOpen, screenSize } as model) =
+viewMenu ({ menuIsOpen, screenSize, userColor } as model) =
     Html.nav
         [ Attrs.css
             [ Css.height <| Css.pct 100
@@ -528,14 +753,21 @@ viewMenu ({ menuIsOpen, screenSize } as model) =
                 [ menuItem <|
                     Html.button
                         [ Attrs.css <|
-                            defaultButtonStyle screenSize
+                            defaultButtonStyle userColor screenSize
+                        , Events.onClick ShowColorPicker
+                        ]
+                        [ Html.text "Set Color" ]
+                , menuItem <|
+                    Html.button
+                        [ Attrs.css <|
+                            defaultButtonStyle userColor screenSize
                         , Events.onClick ShowAbout
                         ]
                         [ Html.text "About" ]
                 , menuItem <|
                     Html.button
                         [ Attrs.css <|
-                            defaultButtonStyle screenSize
+                            defaultButtonStyle userColor screenSize
                         , Events.onClick AttemptPurge
                         ]
                         [ Html.text "Purge?" ]
@@ -556,7 +788,7 @@ menuItem child =
 
 
 viewMmenuButton : Model -> Html Msg
-viewMmenuButton { menuIsOpen } =
+viewMmenuButton { menuIsOpen, showAbout, attemptPurge, showColorPicker } =
     Html.button
         [ Attrs.css
             [ Css.border <| Css.px 0
@@ -570,6 +802,7 @@ viewMmenuButton { menuIsOpen } =
             , Css.padding <| Css.rem 0
             ]
         , Events.onClick <| SetMenuOpen <| not menuIsOpen
+        , Attrs.disabled <| showAbout || attemptPurge || showColorPicker
         ]
     <|
         if menuIsOpen then
@@ -663,8 +896,8 @@ viewThoughts ({ oldThoughts } as model) =
         )
 
 
-viewModal : ScreenSize -> List (Html Msg) -> Html Msg
-viewModal screenSize children =
+viewModal : PrimaryColor -> ScreenSize -> List (Html Msg) -> Html Msg
+viewModal userColor screenSize children =
     Html.div
         [ Attrs.css
             [ Css.position Css.absolute
@@ -693,7 +926,7 @@ viewModal screenSize children =
         ]
         [ Html.div
             [ Attrs.css
-                [ Css.backgroundColor primaryColor
+                [ Css.backgroundColor <| toCssColor userColor
                 , Css.padding <| Css.rem 1
                 , Css.maxWidth <| Css.rem 40
                 ]
@@ -703,25 +936,30 @@ viewModal screenSize children =
 
 
 viewAbout : Model -> Html Msg
-viewAbout { showAbout, screenSize } =
+viewAbout { showAbout, screenSize, userColor } =
     if showAbout then
-        viewModal
+        viewModal userColor
             screenSize
-            [ Html.span
-                []
-                [ Html.text """A simple app for storing thoughts.
-All thoughts are stored in localStorage (in your browser). There's a button to purge all imformation, because the data is yours and only yours.
+            [ Html.p
+                [ Attrs.css
+                    [ Css.whiteSpace Css.preWrap ]
+                ]
+                [ Html.span
+                    []
+                    [ Html.text """A simple app for storing thoughts.
+
+All thoughts are stored in localStorage (in your browser).
+There's a button to purge all imformation, because the data is yours and only yours.
 
 If you'd like to see the code, it can be found at """
-                , Html.a
-                    [ Attrs.href "https://github.com/wolfadex/idea-stream"
-                    , Attrs.target "_blank"
+                    , Html.a
+                        [ Attrs.href "https://github.com/wolfadex/idea-stream"
+                        , Attrs.target "_blank"
+                        ]
+                        [ Html.text "idea-stream on GitHub" ]
+                    , Html.text "."
                     ]
-                    [ Html.text "idea-stream on GitHub" ]
-                , Html.text "."
                 ]
-            , Html.br [] []
-            , Html.br [] []
             , Html.section
                 [ Attrs.css
                     [ Css.displayFlex
@@ -729,8 +967,8 @@ If you'd like to see the code, it can be found at """
                     ]
                 ]
                 [ Html.button
-                    [ Attrs.css
-                        (defaultButtonStyle screenSize)
+                    [ Attrs.css <|
+                        defaultButtonStyle userColor screenSize
                     , Events.onClick HideAbout
                     , Attrs.id "hideAboutButton"
                     ]
@@ -743,9 +981,9 @@ If you'd like to see the code, it can be found at """
 
 
 viewPurgeAttempt : Model -> Html Msg
-viewPurgeAttempt { attemptPurge, screenSize } =
+viewPurgeAttempt { attemptPurge, screenSize, userColor } =
     if attemptPurge then
-        viewModal
+        viewModal userColor
             screenSize
             [ Html.p
                 [ Attrs.css
@@ -777,13 +1015,13 @@ viewPurgeAttempt { attemptPurge, screenSize } =
                 ]
                 [ Html.button
                     [ Attrs.css
-                        (defaultButtonStyle screenSize)
+                        (defaultButtonStyle userColor screenSize)
                     , Events.onClick ExecutePurge
                     ]
                     [ Html.text "Purge" ]
                 , Html.button
                     [ Attrs.css
-                        (defaultButtonStyle screenSize
+                        (defaultButtonStyle userColor screenSize
                             ++ [ Css.marginLeft <| Css.rem 1 ]
                         )
                     , Events.onClick CancelPurge
@@ -797,8 +1035,8 @@ viewPurgeAttempt { attemptPurge, screenSize } =
         emptyHtml
 
 
-defaultButtonStyle : ScreenSize -> List Css.Style
-defaultButtonStyle screenSize =
+defaultButtonStyle : PrimaryColor -> ScreenSize -> List Css.Style
+defaultButtonStyle userColor screenSize =
     [ Css.fontSize <|
         Css.rem <|
             case screenSize of
@@ -814,15 +1052,15 @@ defaultButtonStyle screenSize =
         _ ->
             Css.padding2 (Css.rem 2) (Css.rem 4)
     , Css.backgroundColor secondaryColor
-    , Css.color primaryColor
+    , Css.color <| toCssColor userColor
     , Css.cursor Css.pointer
-    , Css.border3 (Css.px 1) Css.solid primaryColor
+    , Css.border3 (Css.px 1) Css.solid <| toCssColor userColor
     ]
 
 
-backgroundGradient : Css.Style
-backgroundGradient =
-    Css.backgroundImage <| Css.linearGradient (Css.stop secondaryColor) (Css.stop primaryColor) []
+backgroundGradient : PrimaryColor -> Css.Style
+backgroundGradient userColor =
+    Css.backgroundImage <| Css.linearGradient (Css.stop secondaryColor) (Css.stop <| toCssColor userColor) []
 
 
 viewOldThought : Model -> ( Thought, Posix ) -> Maybe ( String, Html msg )
@@ -964,13 +1202,16 @@ stringFromMonth month =
 
 
 viewCurrentThought : Model -> Html Msg
-viewCurrentThought { screenSize, currentThought, finding } =
+viewCurrentThought { screenSize, currentThought, finding, userColor, showAbout, attemptPurge, showColorPicker } =
     let
         ( showSearch, searchTerms ) =
             finding
 
         ( thought, _ ) =
             currentThought
+
+        modalIsOpen =
+            showAbout || attemptPurge || showColorPicker
     in
     Html.section
         [ Attrs.css
@@ -993,6 +1234,7 @@ viewCurrentThought { screenSize, currentThought, finding } =
                     [ Attrs.id "searchInput"
                     , Attrs.type_ "text"
                     , Events.onInput NewSearch
+                    , Attrs.disabled modalIsOpen
                     , Attrs.value searchTerms
                     , Attrs.css
                         [ Css.fontSize <|
@@ -1018,6 +1260,7 @@ viewCurrentThought { screenSize, currentThought, finding } =
                     , Attrs.id "thoughtBox"
                     , Attrs.autofocus True
                     , Events.onInput UpdateThought
+                    , Attrs.disabled modalIsOpen
                     , Attrs.css
                         [ Css.height <| Css.rem 5
                         , case screenSize of
@@ -1064,8 +1307,8 @@ viewCurrentThought { screenSize, currentThought, finding } =
                     [ Events.onClick StoreAndCreateThought
                     , Attrs.id "storeThoughtButton"
                     , Attrs.css <|
-                        defaultButtonStyle screenSize
-                    , Attrs.disabled <| String.isEmpty thought
+                        defaultButtonStyle userColor screenSize
+                    , Attrs.disabled <| String.isEmpty thought || modalIsOpen
                     ]
                     [ Html.text "Save" ]
             , Html.button
@@ -1076,7 +1319,8 @@ viewCurrentThought { screenSize, currentThought, finding } =
                     else
                         ShowFind
                 , Attrs.css <|
-                    defaultButtonStyle screenSize
+                    defaultButtonStyle userColor screenSize
+                , Attrs.disabled modalIsOpen
                 ]
                 [ Html.text <|
                     if showSearch then
