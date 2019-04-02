@@ -2,7 +2,7 @@ port module Main exposing (main)
 
 import Browser exposing (Document)
 import Browser.Dom as Dom
-import Browser.Events exposing (onAnimationFrameDelta, onKeyDown, onResize)
+import Browser.Events exposing (onAnimationFrame, onKeyDown, onResize)
 import Css
 import Css.Transitions as Transitions
 import Dict exposing (Dict)
@@ -32,14 +32,14 @@ main =
 
 type alias Model =
     { oldThoughts : List ( Thought, Posix )
-    , currentThought : Maybe ( Thought, Posix )
+    , currentThought : ( Thought, Posix )
     , attemptPurge : Bool
-    , showMenu : Bool
     , showAbout : Bool
     , currentZone : Maybe Zone
-    , themeColor : Float
     , screenSize : ScreenSize
     , isVertical : Bool
+    , finding : ( Bool, String )
+    , currentTime : Posix
     }
 
 
@@ -49,7 +49,7 @@ type alias Thought =
 
 type alias Flags =
     { priorThoughts : List ( Thought, Posix )
-    , now : Int
+    , now : Posix
     , width : Int
     , height : Int
     }
@@ -63,23 +63,22 @@ type ScreenSize
 
 type Msg
     = NoOp
-    | CreateThought
     | StartThought Posix
     | UpdateThought String
     | UpdateThoughtTime Posix
-    | TryStoringThought Posix
+    | StoreThoughtAfterTime Posix
     | StoreAndCreateThought
-    | StoreOrCreateThought
     | AttemptPurge
     | CancelPurge
     | ExecutePurge
-    | ShowMenu
-    | HideMenu
     | ShowAbout
     | HideAbout
     | SetZone Zone
-    | UpdateThemeColor Float
     | UpdateSizeAndOrientation Int Int
+    | ShowFind
+    | HideFind
+    | NewSearch String
+    | TimeTick Posix
 
 
 
@@ -95,23 +94,20 @@ init flags =
     ( { oldThoughts =
             case priorThoughts of
                 [] ->
-                    [ ( "Welcome to Idea Stream", Time.millisToPosix now ) ]
+                    [ ( "Welcome to Idea Stream", now ) ]
 
                 _ ->
                     priorThoughts
-      , currentThought = Nothing
+      , currentThought = ( "", now )
       , attemptPurge = False
-      , showMenu = False
       , showAbout = False
       , currentZone = Nothing
-      , themeColor = now |> modBy 360 |> toFloat
       , screenSize = calculateScreenSize width
       , isVertical = height > width
+      , finding = ( False, "" )
+      , currentTime = now
       }
-    , Cmd.batch
-        [ focusNewThoughtButton
-        , Task.perform SetZone Time.here
-        ]
+    , Task.perform SetZone Time.here
     )
 
 
@@ -134,7 +130,7 @@ flagsDecoder val =
             flags
 
         Err _ ->
-            { priorThoughts = [], now = 0, width = 0, height = 0 }
+            { priorThoughts = [], now = Time.millisToPosix 0, width = 0, height = 0 }
 
 
 decodeFlags : Decoder Flags
@@ -142,7 +138,7 @@ decodeFlags =
     Decode.map4
         (\maybeThoughts now width height ->
             { priorThoughts = Maybe.withDefault [] maybeThoughts
-            , now = now
+            , now = Time.millisToPosix now
             , width = width
             , height = height
             }
@@ -170,35 +166,31 @@ decodeThought =
 subscriptions : Model -> Sub Msg
 subscriptions _ =
     Sub.batch
-        [ Time.every (15 * 1000) TryStoringThought
+        [ Time.every (15 * 1000) StoreThoughtAfterTime
         , onKeyDown decodeKeyDown
-        , onAnimationFrameDelta UpdateThemeColor
+        , onAnimationFrame TimeTick
         , onResize UpdateSizeAndOrientation
         ]
 
 
 decodeKeyDown : Decoder Msg
 decodeKeyDown =
-    Decode.map4
+    Decode.map3
         keyDownToMsg
         (Decode.field "key" Decode.string)
         (Decode.field "ctrlKey" Decode.bool)
-        (Decode.field "shiftKey" Decode.bool)
         (Decode.field "repeat" Decode.bool)
 
 
-keyDownToMsg : String -> Bool -> Bool -> Bool -> Msg
-keyDownToMsg key ctrlDown shiftDown isRepeat =
+keyDownToMsg : String -> Bool -> Bool -> Msg
+keyDownToMsg key ctrlDown isRepeat =
     if isRepeat then
         NoOp
 
     else
-        case ( key, ctrlDown, shiftDown ) of
-            ( "Enter", True, False ) ->
+        case ( key, ctrlDown ) of
+            ( "Enter", True ) ->
                 StoreAndCreateThought
-
-            ( "Enter", False, True ) ->
-                StoreOrCreateThought
 
             _ ->
                 NoOp
@@ -238,24 +230,22 @@ update msg model =
         NoOp ->
             ( model, Cmd.none )
 
-        UpdateSizeAndOrientation width height ->
-            ( { model | screenSize = calculateScreenSize width, isVertical = height > width }
-            , Cmd.none
+        TimeTick time ->
+            ( { model | currentTime = time }, Cmd.none )
+
+        ShowFind ->
+            ( { model | finding = ( True, "" ) }
+            , focusElement "searchInput"
             )
 
-        UpdateThemeColor delta ->
-            let
-                nextColor =
-                    model.themeColor + delta / 1000
-            in
-            ( { model
-                | themeColor =
-                    if nextColor > 360 then
-                        nextColor - 360
+        HideFind ->
+            ( { model | finding = ( False, "" ) }, focusElement "thoughtBox" )
 
-                    else
-                        nextColor
-              }
+        NewSearch term ->
+            ( { model | finding = ( True, term ) }, Cmd.none )
+
+        UpdateSizeAndOrientation width height ->
+            ( { model | screenSize = calculateScreenSize width, isVertical = height > width }
             , Cmd.none
             )
 
@@ -263,124 +253,92 @@ update msg model =
             ( { model | currentZone = Just zone }, Cmd.none )
 
         ShowAbout ->
-            ( { model | showAbout = True, showMenu = False }
+            ( { model | showAbout = True }
             , focusElement "hideAboutButton"
             )
 
         HideAbout ->
-            ( { model | showAbout = False }, focusNewThoughtButton )
+            ( { model | showAbout = False }, Cmd.none )
 
         AttemptPurge ->
-            ( { model | attemptPurge = True, showMenu = False }
+            ( { model | attemptPurge = True }
             , focusElement "cancelPurgeButton"
             )
 
         CancelPurge ->
-            ( { model | attemptPurge = False }, focusNewThoughtButton )
+            ( { model | attemptPurge = False }, Cmd.none )
 
         ExecutePurge ->
-            ( { model | attemptPurge = False, oldThoughts = [], currentThought = Nothing }
-            , Cmd.batch
-                [ purgeThoughts ()
-                , focusNewThoughtButton
-                ]
-            )
-
-        ShowMenu ->
-            ( { model | showMenu = True }, Cmd.none )
-
-        HideMenu ->
-            ( { model | showMenu = False }, Cmd.none )
-
-        CreateThought ->
-            ( model
-            , Task.perform StartThought Time.now
+            ( { model | attemptPurge = False, oldThoughts = [], currentThought = ( "", Time.millisToPosix 0 ) }
+            , purgeThoughts ()
             )
 
         StartThought time ->
-            ( { model
-                | currentThought = Just ( "", time )
-                , showMenu = False
-                , showAbout = False
-                , attemptPurge = False
-              }
+            ( { model | currentThought = ( "", time ) }
             , focusElement "thoughtBox"
             )
 
         UpdateThought newContent ->
-            case model.currentThought of
-                Nothing ->
-                    ( model, Cmd.none )
+            let
+                ( _, time ) =
+                    model.currentThought
+            in
+            ( { model | currentThought = ( newContent, time ) }
+            , Task.perform UpdateThoughtTime Time.now
+            )
 
-                Just ( _, t ) ->
-                    ( { model | currentThought = Just ( newContent, t ) }
-                    , Task.perform UpdateThoughtTime Time.now
-                    )
+        UpdateThoughtTime time ->
+            let
+                ( thought, _ ) =
+                    model.currentThought
+            in
+            ( { model | currentThought = ( thought, time ) }
+            , Cmd.none
+            )
 
-        UpdateThoughtTime t ->
-            case model.currentThought of
-                Nothing ->
-                    ( model, Cmd.none )
+        StoreThoughtAfterTime now ->
+            let
+                ( _, time ) =
+                    model.currentThought
+            in
+            if Time.posixToMillis now - Time.posixToMillis time > (5 * 60 * 1000) then
+                let
+                    nextModel =
+                        storeThought model
+                in
+                ( nextModel
+                , Cmd.batch
+                    [ writeThoughtsToDisk nextModel.oldThoughts
+                    , scrollToCurrentThought
+                    ]
+                )
 
-                Just ( thought, _ ) ->
-                    ( { model | currentThought = Just ( thought, t ) }
-                    , Cmd.none
-                    )
-
-        TryStoringThought now ->
-            case model.currentThought of
-                Nothing ->
-                    ( model, Cmd.none )
-
-                Just ( _, t ) ->
-                    if Time.posixToMillis now - Time.posixToMillis t > (5 * 60 * 1000) then
-                        let
-                            nextModel =
-                                storeThought model
-                        in
-                        ( nextModel
-                        , Cmd.batch
-                            [ focusNewThoughtButton
-                            , writeThoughtsToDisk nextModel.oldThoughts
-                            ]
-                        )
-
-                    else
-                        ( model, Cmd.none )
+            else
+                ( model, Cmd.none )
 
         StoreAndCreateThought ->
             let
                 nextModel =
-                    case model.currentThought of
-                        Nothing ->
-                            model
-
-                        Just _ ->
-                            storeThought model
+                    storeThought model
             in
             ( nextModel
             , Cmd.batch
-                [ Task.perform (\_ -> CreateThought) (Task.succeed ())
-                , writeThoughtsToDisk nextModel.oldThoughts
+                [ writeThoughtsToDisk nextModel.oldThoughts
+                , scrollToCurrentThought
                 ]
             )
 
-        StoreOrCreateThought ->
-            case model.currentThought of
-                Nothing ->
-                    ( model, Task.perform (\_ -> CreateThought) (Task.succeed ()) )
 
-                Just _ ->
-                    let
-                        nextModel =
-                            storeThought model
-                    in
-                    ( nextModel
-                    , Cmd.batch
-                        [ focusNewThoughtButton
-                        , writeThoughtsToDisk nextModel.oldThoughts
-                        ]
-                    )
+startThought : Cmd Msg
+startThought =
+    Task.perform StartThought Time.now
+
+
+scrollToCurrentThought : Cmd Msg
+scrollToCurrentThought =
+    Dom.getViewportOf "thoughtList"
+        |> Task.andThen (\info -> Dom.setViewportOf "thoughtList" 0 info.scene.height)
+        |> Task.attempt (\_ -> NoOp)
 
 
 focusElement : String -> Cmd Msg
@@ -388,53 +346,50 @@ focusElement id =
     Task.attempt (\_ -> NoOp) (Dom.focus id)
 
 
-focusNewThoughtButton : Cmd Msg
-focusNewThoughtButton =
-    focusElement "newThoughtButton"
-
-
 storeThought : Model -> Model
-storeThought model =
-    case model.currentThought of
-        Nothing ->
-            model
+storeThought ({ currentThought, currentTime } as model) =
+    let
+        ( thought, t ) =
+            currentThought
 
-        Just ( thought, t ) ->
-            let
-                trimmedThought =
-                    String.trim thought
-            in
-            if String.length trimmedThought < 1 then
-                { model | currentThought = Nothing }
+        trimmedThought =
+            String.trim thought
 
-            else
-                { model
-                    | currentThought = Nothing
-                    , oldThoughts = ( trimmedThought, t ) :: model.oldThoughts
-                }
+        newThought =
+            ( "", currentTime )
+    in
+    if String.length trimmedThought < 1 then
+        { model | currentThought = newThought }
+
+    else
+        { model
+            | currentThought = newThought
+            , oldThoughts = ( trimmedThought, t ) :: model.oldThoughts
+        }
 
 
 
 ---- VIEW ----
 
 
+secondaryColor : Css.Color
+secondaryColor =
+    Css.rgb 255 255 255
+
+
+primaryColor : Css.Color
+primaryColor =
+    Css.rgb 255 200 200
+
+
 darkColor : Css.Color
 darkColor =
-    Css.rgb 50 10 10
-
-
-lightColor : Float -> Css.Color
-lightColor themeColor =
-    Css.hsl themeColor 1 0.89
-
-
-
--- Css.rgb 255 200 200
+    Css.rgb 45 45 45
 
 
 view : Model -> Document Msg
-view ({ themeColor, screenSize, isVertical } as model) =
-    { title = "Idea Stream"
+view ({ screenSize, isVertical } as model) =
+    { title = "Note to Self"
     , body =
         [ Html.toUnstyled <|
             case screenSize of
@@ -457,7 +412,7 @@ view ({ themeColor, screenSize, isVertical } as model) =
 
 
 viewApp : Model -> Html Msg
-viewApp ({ showMenu, themeColor, screenSize } as model) =
+viewApp ({ screenSize } as model) =
     Html.div
         [ Attrs.css
             [ Css.fontSize <|
@@ -471,18 +426,85 @@ viewApp ({ showMenu, themeColor, screenSize } as model) =
 
                         Large ->
                             1
+            , Css.position Css.absolute
+            , Css.top <| Css.rem 0
+            , Css.bottom <| Css.rem 0
+            , Css.left <| Css.rem 0
+            , Css.right <| Css.rem 0
+            , backgroundGradient
+            , Css.fontFamily Css.sansSerif
+            , Css.color darkColor
             ]
         ]
-        [ viewIdeaStream model
-        , viewMenuButton model
-        , viewMenu model
+        [ Html.header
+            [ Attrs.css
+                [ Css.width <| Css.pct 100
+                , Css.textAlign Css.center
+                , Css.position Css.fixed
+                , Css.zIndex <| Css.int 1
+                , Css.backgroundImage <| Css.linearGradient (Css.stop2 secondaryColor <| Css.rem 2) (Css.stop <| Css.rgba 255 255 255 0) []
+                ]
+            ]
+            [ Html.h1
+                [ Attrs.css
+                    [ Css.color primaryColor
+                    ]
+                ]
+                [ Html.text "Note to Self" ]
+            ]
+        , Html.main_
+            [ Attrs.css
+                [ Css.position Css.fixed
+                , Css.top <| Css.rem 0
+                , Css.bottom <| Css.rem 0
+                , Css.left <| Css.rem 0
+                , Css.right <| Css.rem 0
+                ]
+            ]
+            [ viewThoughts model ]
+        , Html.footer
+            [ Attrs.css
+                [ Css.position Css.fixed
+                , Css.bottom <| Css.rem 0
+                , Css.width <| Css.pct 100
+                , Css.displayFlex
+                , Css.justifyContent Css.center
+                ]
+            ]
+            [ viewCurrentThought model ]
         , viewPurgeAttempt model
         , viewAbout model
         ]
 
 
-viewModal : Float -> List (Html Msg) -> Html Msg
-viewModal themeColor children =
+
+-- [ Html.button
+--     [ Attrs.css
+--         (defaultButtonStyle screenSize
+--             ++ [ Css.position Css.absolute
+--                , Css.top <| Css.rem 1
+--                , Css.right <| Css.rem 1
+--                ]
+--         )
+--     , Events.onClick AttemptPurge
+--     ]
+--     [ Html.text "Purge?" ]
+-- , Html.button
+--     [ Attrs.css
+--         (defaultButtonStyle screenSize
+--             ++ [ Css.position Css.absolute
+--                , Css.top <| Css.rem 1
+--                , Css.left <| Css.rem 1
+--                ]
+--         )
+--     , Events.onClick ShowAbout
+--     ]
+--     [ Html.text "About" ]
+-- ]
+
+
+viewModal : ScreenSize -> List (Html Msg) -> Html Msg
+viewModal screenSize children =
     Html.div
         [ Attrs.css
             [ Css.position Css.absolute
@@ -490,17 +512,28 @@ viewModal themeColor children =
             , Css.bottom <| Css.px 0
             , Css.left <| Css.px 0
             , Css.right <| Css.px 0
+            , Css.zIndex <| Css.int 10
             , Css.backgroundColor <| Css.rgba 0 0 0 0.5
             , Css.displayFlex
             , Css.alignItems Css.center
             , Css.justifyContent Css.center
             , Css.fontFamily Css.sansSerif
-            , Css.fontSize <| Css.rem 1.2
+            , Css.fontSize <|
+                Css.rem <|
+                    case screenSize of
+                        Large ->
+                            1.2
+
+                        Medium ->
+                            2.2
+
+                        Small ->
+                            3.2
             ]
         ]
         [ Html.div
             [ Attrs.css
-                [ Css.backgroundColor <| lightColor themeColor
+                [ Css.backgroundColor primaryColor
                 , Css.padding <| Css.rem 1
                 , Css.maxWidth <| Css.rem 40
                 ]
@@ -510,9 +543,10 @@ viewModal themeColor children =
 
 
 viewAbout : Model -> Html Msg
-viewAbout { themeColor, showAbout, screenSize } =
+viewAbout { showAbout, screenSize } =
     if showAbout then
-        viewModal themeColor
+        viewModal
+            screenSize
             [ Html.span
                 []
                 [ Html.text """A simple app for storing thoughts.
@@ -536,7 +570,7 @@ If you'd like to see the code, it can be found at """
                 ]
                 [ Html.button
                     [ Attrs.css
-                        (defaultButtonStyle screenSize themeColor)
+                        (defaultButtonStyle screenSize)
                     , Events.onClick HideAbout
                     , Attrs.id "hideAboutButton"
                     ]
@@ -545,184 +579,14 @@ If you'd like to see the code, it can be found at """
             ]
 
     else
-        Html.text ""
-
-
-viewMenuButton : Model -> Html Msg
-viewMenuButton { showMenu, themeColor, screenSize } =
-    Html.button
-        [ Events.onClick <|
-            if showMenu then
-                HideMenu
-
-            else
-                ShowMenu
-        , Attrs.css
-            [ Css.position Css.absolute
-            , Css.top <|
-                Css.rem <|
-                    case screenSize of
-                        Large ->
-                            1
-
-                        _ ->
-                            4
-            , Css.right <|
-                Css.rem <|
-                    case screenSize of
-                        Large ->
-                            1
-
-                        _ ->
-                            4
-            , Css.backgroundColor darkColor
-            , Css.border <| Css.px 0
-            , Css.cursor Css.pointer
-            , Css.borderRadius <| Css.rem 50
-            , Css.padding <| Css.rem 1
-            , Css.overflow Css.visible
-            , Css.transform <|
-                Css.scale <|
-                    case screenSize of
-                        Small ->
-                            2
-
-                        _ ->
-                            1
-            ]
-        ]
-        [ Html.div
-            [ Attrs.css
-                [ Css.display Css.inlineBlock
-                , Css.width <| Css.px 35
-                , Css.height <| Css.px 35
-                ]
-            ]
-            [ Html.div
-                [ Attrs.css
-                    [ Css.width <| Css.px 35
-                    , Css.height <| Css.px 5
-                    , Css.backgroundColor <| lightColor themeColor
-                    , Css.margin2 (Css.px 6) (Css.px 0)
-                    , Css.borderRadius <| Css.px 10
-
-                    -- This bar only
-                    , Css.transforms <|
-                        if showMenu then
-                            [ Css.rotate <| Css.deg -45
-                            , Css.translate2 (Css.px -9) (Css.px 6)
-                            ]
-
-                        else
-                            [ Css.rotate <| Css.deg 0
-                            , Css.translate2 (Css.px 0) (Css.px 0)
-                            ]
-                    ]
-                ]
-                []
-            , Html.div
-                [ Attrs.css
-                    [ Css.width <| Css.px 35
-                    , Css.height <| Css.px 5
-                    , Css.backgroundColor <| lightColor themeColor
-                    , Css.margin2 (Css.px 6) (Css.px 0)
-                    , Css.borderRadius <| Css.px 10
-
-                    -- This bar only
-                    , Css.opacity <|
-                        Css.num <|
-                            if showMenu then
-                                0
-
-                            else
-                                1
-                    ]
-                ]
-                []
-            , Html.div
-                [ Attrs.css
-                    [ Css.width <| Css.px 35
-                    , Css.height <| Css.px 5
-                    , Css.backgroundColor <| lightColor themeColor
-                    , Css.margin2 (Css.px 6) (Css.px 0)
-                    , Css.borderRadius <| Css.px 10
-
-                    -- This bar only
-                    , Css.transforms <|
-                        if showMenu then
-                            [ Css.rotate <| Css.deg 45
-                            , Css.translate2 (Css.px -8) (Css.px -8)
-                            ]
-
-                        else
-                            [ Css.rotate <| Css.deg 0
-                            , Css.translate2 (Css.px 0) (Css.px 0)
-                            ]
-                    ]
-                ]
-                []
-            ]
-        ]
-
-
-viewMenu : Model -> Html Msg
-viewMenu { showMenu, themeColor, screenSize } =
-    if showMenu then
-        Html.div
-            [ Attrs.css
-                [ Css.position Css.absolute
-                , Css.top <| Css.rem <|
-                    case screenSize of
-                        Small ->
-                            13
-
-                        _ ->
-                            7
-                , Css.right <| Css.rem 1
-
-                -- , Css.width <| Css.rem 15
-                , Css.border3 (Css.px 1) Css.solid (Css.rgb 0 0 0)
-                , Css.backgroundColor <| lightColor themeColor
-                ]
-            ]
-            [ Html.ul
-                [ Attrs.css
-                    [ Css.margin <| Css.rem 0
-                    , Css.listStyle Css.none
-                    , Css.padding <| Css.rem 1
-                    ]
-                ]
-                [ Html.li
-                    []
-                    [ Html.button
-                        [ Attrs.css
-                            (defaultButtonStyle screenSize themeColor)
-                        , Events.onClick AttemptPurge
-                        ]
-                        [ Html.text "Purge?" ]
-                    ]
-                , Html.li
-                    [ Attrs.css
-                        [ Css.marginTop <| Css.rem 1 ]
-                    ]
-                    [ Html.button
-                        [ Attrs.css
-                            (defaultButtonStyle screenSize themeColor)
-                        , Events.onClick ShowAbout
-                        ]
-                        [ Html.text "About" ]
-                    ]
-                ]
-            ]
-
-    else
-        Html.text ""
+        emptyHtml
 
 
 viewPurgeAttempt : Model -> Html Msg
-viewPurgeAttempt { attemptPurge, themeColor, screenSize } =
+viewPurgeAttempt { attemptPurge, screenSize } =
     if attemptPurge then
-        viewModal themeColor
+        viewModal
+            screenSize
             [ Html.p
                 [ Attrs.css
                     [ Css.whiteSpace Css.preWrap ]
@@ -753,13 +617,13 @@ viewPurgeAttempt { attemptPurge, themeColor, screenSize } =
                 ]
                 [ Html.button
                     [ Attrs.css
-                        (defaultButtonStyle screenSize themeColor)
+                        (defaultButtonStyle screenSize)
                     , Events.onClick ExecutePurge
                     ]
                     [ Html.text "Purge" ]
                 , Html.button
                     [ Attrs.css
-                        (defaultButtonStyle screenSize themeColor
+                        (defaultButtonStyle screenSize
                             ++ [ Css.marginLeft <| Css.rem 1 ]
                         )
                     , Events.onClick CancelPurge
@@ -770,11 +634,11 @@ viewPurgeAttempt { attemptPurge, themeColor, screenSize } =
             ]
 
     else
-        Html.text ""
+        emptyHtml
 
 
-defaultButtonStyle : ScreenSize -> Float -> List Css.Style
-defaultButtonStyle screenSize themeColor =
+defaultButtonStyle : ScreenSize -> List Css.Style
+defaultButtonStyle screenSize =
     [ Css.fontSize <|
         Css.rem <|
             case screenSize of
@@ -789,133 +653,149 @@ defaultButtonStyle screenSize themeColor =
 
         _ ->
             Css.padding2 (Css.rem 2) (Css.rem 4)
-    , Css.backgroundColor darkColor
-    , Css.color <| lightColor themeColor
+    , Css.backgroundColor secondaryColor
+    , Css.color primaryColor
     , Css.cursor Css.pointer
+    , Css.border3 (Css.px 1) Css.solid primaryColor
     ]
 
 
-backgroundGradient : Float -> Css.Style
-backgroundGradient themeColor =
-    Css.backgroundImage <| Css.linearGradient (Css.stop darkColor) (Css.stop <| lightColor themeColor) []
+backgroundGradient : Css.Style
+backgroundGradient =
+    Css.backgroundImage <| Css.linearGradient (Css.stop secondaryColor) (Css.stop primaryColor) []
 
 
-viewIdeaStream : Model -> Html Msg
-viewIdeaStream { oldThoughts, currentThought, currentZone, themeColor, screenSize } =
-    Html.div
-        [ Attrs.css
-            [ Css.position Css.absolute
-            , Css.top <| Css.px 0
-            , Css.bottom <| Css.px 0
-            , Css.left <| Css.px 0
-            , Css.right <| Css.px 0
-            , Css.displayFlex
-            , Css.flexDirection Css.column
-            , Css.alignItems Css.center
-            , backgroundGradient themeColor
-            , Css.fontFamily Css.sansSerif
-            , Css.color darkColor
-            ]
-        ]
-        [ Html.h1
-            [ Attrs.css
-                [ Css.color <| lightColor themeColor ]
-            ]
-            [ Html.text "Thoughts" ]
-        , viewThoughts oldThoughts currentZone screenSize
-        , viewCurrentThought screenSize themeColor currentThought
-        ]
-
-
-viewThoughts : List ( Thought, Posix ) -> Maybe Zone -> ScreenSize -> Html Msg
-viewThoughts oldThoughts maybeZone screenSize =
+viewThoughts : Model -> Html Msg
+viewThoughts ({ oldThoughts } as model) =
     KeyedHtml.ul
         [ Attrs.css
             [ Css.displayFlex
             , Css.flexDirection Css.columnReverse
-            , Css.overflowY Css.auto
             , Css.width <| Css.pct 100
             , Css.listStyle Css.none
             , Css.padding <| Css.px 0
             , Css.alignItems Css.center
             , Css.flex <| Css.int 1
+            , Css.margin <| Css.rem 0
+            , Css.height <| Css.pct 100
+            , Css.overflowY Css.auto
             ]
+        , Attrs.id "thoughtList"
         ]
-    <|
-        List.map (viewOldThought maybeZone screenSize) oldThoughts
+        (oldThoughts
+            |> List.filterMap (viewOldThought model)
+        )
 
 
-viewOldThought : Maybe Zone -> ScreenSize -> ( Thought, Posix ) -> ( String, Html msg )
-viewOldThought maybeZone screenSize ( thoughts, createdAt ) =
-    ( createdAt |> Time.posixToMillis |> String.fromInt
-    , Html.li
-        [ Attrs.css
-            [ case screenSize of
-                Large ->
-                    Css.width <| Css.rem 30
+viewOldThought : Model -> ( Thought, Posix ) -> Maybe ( String, Html msg )
+viewOldThought { currentZone, screenSize, finding } ( thought, createdAt ) =
+    let
+        ( isSearching, term ) =
+            finding
 
-                _ ->
-                    Css.width <| Css.pct 100
-            , Css.lastChild
-                [ Css.padding2 (Css.rem 1) (Css.rem 0)
-                , Css.paddingTop <| Css.rem 10
-                ]
-            ]
-        ]
-        [ Html.div
-            [ Attrs.css
-                [ Css.border3 (Css.px 1) Css.solid darkColor
-                , Css.padding <| Css.rem 1
-                ]
-            ]
-            [ Html.text <|
-                case maybeZone of
-                    Nothing ->
-                        ""
+        lowerTerm =
+            String.toLower term
 
-                    Just zone ->
-                        let
-                            year =
-                                Time.toYear zone createdAt
-
-                            month =
-                                Time.toMonth zone createdAt
-
-                            day =
-                                Time.toDay zone createdAt
-
-                            hour =
-                                Time.toHour zone createdAt
-
-                            minute =
-                                Time.toMinute zone createdAt
-                        in
-                        String.fromInt year
-                            ++ " "
-                            ++ stringFromMonth month
-                            ++ " "
-                            ++ String.fromInt day
-                            ++ ", "
-                            ++ String.fromInt hour
-                            ++ ":"
-                            ++ (String.padLeft 2 '0' <| String.fromInt minute)
-            , Html.div
+        lowerThought =
+            String.toLower thought
+    in
+    if not isSearching || String.contains lowerTerm lowerThought then
+        Just
+            ( createdAt |> Time.posixToMillis |> String.fromInt
+            , Html.li
                 [ Attrs.css
-                    [ Css.borderBottom3 (Css.px 1) Css.solid darkColor
-                    , Css.height <| Css.px 1
-                    , Css.width <| Css.pct 100
+                    [ case screenSize of
+                        Large ->
+                            Css.width <| Css.rem 40
+
+                        _ ->
+                            Css.width <| Css.pct 95
+                    , Css.marginTop <| Css.rem 1
+                    , Css.lastChild
+                        [ Css.paddingTop <|
+                            Css.rem <|
+                                case screenSize of
+                                    Large ->
+                                        40
+
+                                    Medium ->
+                                        15
+
+                                    Small ->
+                                        20
+                        ]
+                    , Css.firstChild
+                        [ Css.paddingBottom <|
+                            Css.rem <|
+                                case screenSize of
+                                    Large ->
+                                        10
+
+                                    Medium ->
+                                        10
+
+                                    Small ->
+                                        10
+                        ]
                     ]
                 ]
-                []
-            , Html.p
-                [ Attrs.css
-                    [ Css.whiteSpace Css.preWrap
+                [ Html.div
+                    [ Attrs.css
+                        [ Css.border3 (Css.px 1) Css.solid secondaryColor
+                        , Css.padding <| Css.rem 1
+                        ]
+                    ]
+                    [ Html.text <|
+                        case currentZone of
+                            Nothing ->
+                                ""
+
+                            Just zone ->
+                                let
+                                    year =
+                                        Time.toYear zone createdAt
+
+                                    month =
+                                        Time.toMonth zone createdAt
+
+                                    day =
+                                        Time.toDay zone createdAt
+
+                                    hour =
+                                        Time.toHour zone createdAt
+
+                                    minute =
+                                        Time.toMinute zone createdAt
+                                in
+                                String.fromInt year
+                                    ++ " "
+                                    ++ stringFromMonth month
+                                    ++ " "
+                                    ++ String.fromInt day
+                                    ++ ", "
+                                    ++ String.fromInt hour
+                                    ++ ":"
+                                    ++ (String.padLeft 2 '0' <| String.fromInt minute)
+                    , Html.div
+                        [ Attrs.css
+                            [ Css.borderBottom3 (Css.px 1) Css.solid secondaryColor
+                            , Css.height <| Css.px 1
+                            , Css.width <| Css.pct 100
+                            ]
+                        ]
+                        []
+                    , Html.p
+                        [ Attrs.css
+                            [ Css.whiteSpace Css.preWrap
+                            ]
+                        ]
+                        [ Html.text thought ]
                     ]
                 ]
-                [ Html.text thoughts ]
-            ]
-        ]
-    )
+            )
+
+    else
+        Nothing
 
 
 stringFromMonth : Month -> String
@@ -958,8 +838,15 @@ stringFromMonth month =
             "Dec"
 
 
-viewCurrentThought : ScreenSize -> Float -> Maybe ( Thought, Posix ) -> Html Msg
-viewCurrentThought screenSize themeColor maybeThought =
+viewCurrentThought : Model -> Html Msg
+viewCurrentThought { screenSize, currentThought, finding } =
+    let
+        ( showSearch, searchTerms ) =
+            finding
+
+        ( thought, _ ) =
+            currentThought
+    in
     Html.section
         [ Attrs.css
             [ Css.height <| Css.rem 10
@@ -968,36 +855,59 @@ viewCurrentThought screenSize themeColor maybeThought =
             , Css.justifyContent Css.center
             , case screenSize of
                 Large ->
-                    Css.width <| Css.rem 30
+                    Css.width <| Css.rem 40
 
                 _ ->
                     Css.width <| Css.pct 100
-            , Css.marginBottom <| Css.rem 1
             ]
         ]
-        [ case maybeThought of
-            Nothing ->
-                Html.button
-                    [ Events.onClick CreateThought
-                    , Attrs.id "newThoughtButton"
-                    , Attrs.css <| defaultButtonStyle screenSize themeColor
-                    ]
-                    [ Html.text "New Thought" ]
+        [ Html.section
+            [ Attrs.css
+                [ Css.height <| Css.rem 9
+                , Css.displayFlex
+                , Css.alignItems Css.center
+                ]
+            ]
+            [ if showSearch then
+                Html.input
+                    [ Attrs.id "searchInput"
+                    , Attrs.type_ "text"
+                    , Events.onInput NewSearch
+                    , Attrs.value searchTerms
+                    , Attrs.css
+                        [ Css.fontSize <|
+                            Css.rem <|
+                                case screenSize of
+                                    Large ->
+                                        1
 
-            Just ( thought, _ ) ->
+                                    Medium ->
+                                        2
+
+                                    Small ->
+                                        3
+                        , Css.width <| Css.rem 30
+                        , Css.padding <| Css.rem 1
+                        ]
+                    ]
+                    []
+
+              else
                 Html.textarea
                     [ Attrs.value thought
                     , Attrs.id "thoughtBox"
+                    , Attrs.autofocus True
                     , Events.onInput UpdateThought
                     , Attrs.css
-                        [ Css.height <| Css.calc (Css.pct 100) Css.minus (Css.rem 2)
+                        [ Css.height <| Css.rem 5
                         , case screenSize of
                             Large ->
-                                Css.width <| Css.pct 100
+                                Css.width <| Css.rem 30
 
                             _ ->
                                 Css.width <| Css.rem 40
                         , Css.resize Css.none
+                        , Css.fontFamily Css.sansSerif
                         , Css.fontSize <|
                             Css.rem <|
                                 case screenSize of
@@ -1014,15 +924,51 @@ viewCurrentThought screenSize themeColor maybeThought =
                     , Attrs.rows (String.indices thought "\n" |> List.length |> (+) 1)
                     ]
                     []
-        , case maybeThought of
-            Nothing ->
-                Html.text ""
+            ]
+        , Html.section
+            [ Attrs.css
+                [ Css.displayFlex
+                , Css.flexDirection Css.column
+                , Css.alignItems Css.flexEnd
+                , Css.justifyContent Css.spaceAround
+                , Css.property "justify-content" "space-evenly"
+                , Css.width <| Css.rem 10
+                , Css.height <| Css.rem 10
+                ]
+            ]
+            [ if showSearch then
+                emptyHtml
 
-            Just _ ->
+              else
                 Html.button
-                    [ Events.onClick StoreOrCreateThought
+                    [ Events.onClick StoreAndCreateThought
                     , Attrs.id "storeThoughtButton"
-                    , Attrs.css <| defaultButtonStyle screenSize themeColor
+                    , Attrs.css <|
+                        defaultButtonStyle screenSize
+                    , Attrs.disabled <| String.isEmpty thought
                     ]
                     [ Html.text "Save" ]
+            , Html.button
+                [ Events.onClick <|
+                    if showSearch then
+                        HideFind
+
+                    else
+                        ShowFind
+                , Attrs.css <|
+                    defaultButtonStyle screenSize
+                ]
+                [ Html.text <|
+                    if showSearch then
+                        "Think"
+
+                    else
+                        "Search"
+                ]
+            ]
         ]
+
+
+emptyHtml : Html msg
+emptyHtml =
+    Html.text ""
