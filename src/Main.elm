@@ -42,7 +42,6 @@ type alias Model =
     , showAbout : Bool
     , currentZone : Maybe Zone
     , screenSize : ScreenSize
-    , isVertical : Bool
     , finding : ( Bool, String )
     , currentTime : Posix
     , menuIsOpen : Bool
@@ -59,7 +58,6 @@ type alias Flags =
     { priorThoughts : List ( Thought, Posix )
     , now : Posix
     , width : Int
-    , height : Int
     , colorChoice : PrimaryColor
     }
 
@@ -204,7 +202,7 @@ primaryColorToString pColor =
 init : Value -> ( Model, Cmd Msg )
 init flags =
     let
-        { priorThoughts, now, width, height, colorChoice } =
+        { priorThoughts, now, width, colorChoice } =
             flagsDecoder flags
     in
     ( { oldThoughts =
@@ -219,7 +217,6 @@ init flags =
       , showAbout = False
       , currentZone = Nothing
       , screenSize = calculateScreenSize width
-      , isVertical = height > width
       , finding = ( False, "" )
       , currentTime = now
       , menuIsOpen = False
@@ -249,26 +246,23 @@ flagsDecoder val =
             { priorThoughts = []
             , now = Time.millisToPosix 0
             , width = 0
-            , height = 0
             , colorChoice = Green
             }
 
 
 decodeFlags : Decoder Flags
 decodeFlags =
-    Decode.map5
-        (\maybeThoughts now width height maybeColor ->
+    Decode.map4
+        (\maybeThoughts now width maybeColor ->
             { priorThoughts = Maybe.withDefault [] maybeThoughts
             , now = Time.millisToPosix now
             , width = width
-            , height = height
             , colorChoice = Maybe.withDefault Green maybeColor
             }
         )
         (Decode.maybe (Decode.field "priorThoughts" (Decode.list decodeThought)))
         (Decode.field "now" Decode.int)
         (Decode.field "width" Decode.int)
-        (Decode.field "height" Decode.int)
         (Decode.maybe (Decode.field "colorChoice" Decode.string |> Decode.andThen decodeColor))
 
 
@@ -445,8 +439,8 @@ update msg model =
         NewSearch term ->
             ( { model | finding = ( True, term ) }, Cmd.none )
 
-        UpdateSizeAndOrientation width height ->
-            ( { model | screenSize = calculateScreenSize width, isVertical = height > width }
+        UpdateSizeAndOrientation width _ ->
+            ( { model | screenSize = calculateScreenSize width }
             , Cmd.none
             )
 
@@ -617,19 +611,13 @@ darkColor =
 
 
 view : Model -> Document Msg
-view ({ screenSize, isVertical } as model) =
+view ({ screenSize } as model) =
     { title = appName
     , body =
         [ Html.toUnstyled <|
             case screenSize of
                 Small ->
-                    if isVertical then
-                        viewApp model
-
-                    else
-                        Html.div
-                            []
-                            [ Html.text "Please rotate vertically" ]
+                    viewApp model
 
                 Large ->
                     viewApp model
