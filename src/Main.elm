@@ -5,7 +5,6 @@ import Browser.Dom as Dom
 import Browser.Events exposing (onAnimationFrame, onKeyDown, onResize)
 import Css
 import Css.Transitions as Transitions
-import Debug
 import Dict exposing (Dict)
 import Html.Styled as Html exposing (Html)
 import Html.Styled.Attributes as Attrs
@@ -67,7 +66,6 @@ type alias Flags =
 
 type ScreenSize
     = Small
-    | Medium
     | Large
 
 
@@ -237,9 +235,6 @@ calculateScreenSize width =
     if width > 1200 then
         Large
 
-    else if width > 900 then
-        Medium
-
     else
         Small
 
@@ -403,7 +398,16 @@ update msg model =
             ( model, Cmd.none )
 
         ShowColorPicker ->
-            ( { model | showColorPicker = True, menuIsOpen = False }
+            ( { model
+                | showColorPicker = True
+                , menuIsOpen =
+                    case model.screenSize of
+                        Large ->
+                            False
+
+                        Small ->
+                            True
+              }
             , focusElement "hideColorPickerButton"
             )
 
@@ -422,7 +426,16 @@ update msg model =
             ( { model | currentTime = time }, Cmd.none )
 
         ShowFind ->
-            ( { model | finding = ( True, "" ) }
+            ( { model
+                | finding = ( True, "" )
+                , menuIsOpen =
+                    case model.screenSize of
+                        Large ->
+                            model.menuIsOpen
+
+                        Small ->
+                            False
+              }
             , focusElement "searchInput"
             )
 
@@ -441,7 +454,16 @@ update msg model =
             ( { model | currentZone = Just zone }, Cmd.none )
 
         ShowAbout ->
-            ( { model | showAbout = True, menuIsOpen = False }
+            ( { model
+                | showAbout = True
+                , menuIsOpen =
+                    case model.screenSize of
+                        Large ->
+                            False
+
+                        Small ->
+                            True
+              }
             , focusElement "hideAboutButton"
             )
 
@@ -449,7 +471,16 @@ update msg model =
             ( { model | showAbout = False }, focusThoughtBox )
 
         AttemptPurge ->
-            ( { model | attemptPurge = True, menuIsOpen = False }
+            ( { model
+                | attemptPurge = True
+                , menuIsOpen =
+                    case model.screenSize of
+                        Large ->
+                            False
+
+                        Small ->
+                            True
+              }
             , focusElement "cancelPurgeButton"
             )
 
@@ -516,6 +547,7 @@ update msg model =
             , Cmd.batch
                 [ writeThoughtsToDisk nextModel.oldThoughts
                 , scrollToCurrentThought
+                , focusThoughtBox
                 ]
             )
 
@@ -599,9 +631,6 @@ view ({ screenSize, isVertical } as model) =
                             []
                             [ Html.text "Please rotate vertically" ]
 
-                Medium ->
-                    viewApp model
-
                 Large ->
                     viewApp model
         ]
@@ -616,9 +645,6 @@ viewApp ({ screenSize, userColor } as model) =
                 Css.rem <|
                     case screenSize of
                         Small ->
-                            3
-
-                        Medium ->
                             2
 
                         Large ->
@@ -639,7 +665,19 @@ viewApp ({ screenSize, userColor } as model) =
                 , Css.textAlign Css.center
                 , Css.position Css.fixed
                 , Css.zIndex <| Css.int 1
-                , Css.backgroundImage <| Css.linearGradient (Css.stop2 secondaryColor <| Css.rem 2) (Css.stop <| Css.rgba 255 255 255 0) []
+                , Css.backgroundImage <|
+                    Css.linearGradient
+                        (Css.stop2 secondaryColor <|
+                            Css.rem <|
+                                case screenSize of
+                                    Large ->
+                                        2
+
+                                    Small ->
+                                        6
+                        )
+                        (Css.stop <| Css.rgba 255 255 255 0)
+                        []
                 ]
             ]
             [ Html.h1
@@ -648,6 +686,12 @@ viewApp ({ screenSize, userColor } as model) =
                     ]
                 ]
                 [ Html.text appName ]
+            , case screenSize of
+                Small ->
+                    viewSmallMenu model
+
+                Large ->
+                    emptyHtml
             ]
         , Html.main_
             [ Attrs.css
@@ -670,7 +714,12 @@ viewApp ({ screenSize, userColor } as model) =
                 [ viewThoughts model
                 , viewCurrentThought model
                 ]
-            , viewMenu model
+            , case screenSize of
+                Large ->
+                    viewLargeMenu model
+
+                Small ->
+                    emptyHtml
             ]
         , viewPurgeAttempt model
         , viewAbout model
@@ -687,10 +736,16 @@ viewColorPicker { showColorPicker, screenSize, userColor } =
                 []
                 [ Html.text "Choose a Color"
                 ]
-            , Html.br [] []
             , Html.ul
                 [ Attrs.css
-                    [ Css.listStyle Css.none ]
+                    [ Css.listStyle Css.none
+                    , Css.padding <| Css.rem 0
+                    , Css.displayFlex
+                    , Css.flexDirection Css.column
+                    , Css.flexWrap Css.wrap
+                    , Css.maxHeight <| Css.rem 60
+                    , Css.alignItems Css.center
+                    ]
                 ]
                 (listOfColors
                     |> List.map
@@ -701,8 +756,9 @@ viewColorPicker { showColorPicker, screenSize, userColor } =
                                 ]
                                 [ Html.button
                                     [ Attrs.css
-                                        (defaultButtonStyle userColor screenSize
+                                        (buttonStyle userColor screenSize
                                             ++ [ Css.color <| toCssColor color
+                                               , Css.backgroundColor secondaryColor
                                                ]
                                         )
                                     , Events.onClick <| SetUserColor color
@@ -713,7 +769,7 @@ viewColorPicker { showColorPicker, screenSize, userColor } =
                 )
             , Html.button
                 [ Attrs.css <|
-                    defaultButtonStyle userColor screenSize
+                    primaryButtonStyle userColor screenSize
                 , Events.onClick HideColorPicker
                 , Attrs.id "hideColorPickerButton"
                 ]
@@ -724,8 +780,73 @@ viewColorPicker { showColorPicker, screenSize, userColor } =
         emptyHtml
 
 
-viewMenu : Model -> Html Msg
-viewMenu ({ menuIsOpen, screenSize, userColor } as model) =
+viewSmallMenu : Model -> Html Msg
+viewSmallMenu ({ menuIsOpen, screenSize, userColor } as model) =
+    Html.nav
+        [ Attrs.css
+            [ Css.position Css.fixed
+            , Css.top <| Css.rem 0
+            , Css.bottom <| Css.rem 0
+
+            -- , Css.displayFlex
+            -- , Css.flexDirection Css.columnReverse
+            , Css.backgroundColor secondaryColor
+            , Css.width <|
+                Css.pct <|
+                    if menuIsOpen then
+                        100
+
+                    else
+                        0
+            ]
+        ]
+        [ viewSmallMmenuButton model
+        , Html.ul
+            [ Attrs.css
+                [ Css.listStyle Css.none
+                , Css.paddingLeft <| Css.rem 0
+                , Css.marginTop <| Css.rem 10
+                ]
+            ]
+          <|
+            if menuIsOpen then
+                [ menuItem <|
+                    Html.button
+                        [ Attrs.css <|
+                            buttonStyle userColor screenSize
+                        , Events.onClick ShowFind
+                        ]
+                        [ Html.text "Search" ]
+                , menuItem <|
+                    Html.button
+                        [ Attrs.css <|
+                            buttonStyle userColor screenSize
+                        , Events.onClick ShowColorPicker
+                        ]
+                        [ Html.text "Set Color" ]
+                , menuItem <|
+                    Html.button
+                        [ Attrs.css <|
+                            buttonStyle userColor screenSize
+                        , Events.onClick ShowAbout
+                        ]
+                        [ Html.text "About" ]
+                , menuItem <|
+                    Html.button
+                        [ Attrs.css <|
+                            buttonStyle userColor screenSize
+                        , Events.onClick AttemptPurge
+                        ]
+                        [ Html.text "Purge?" ]
+                ]
+
+            else
+                []
+        ]
+
+
+viewLargeMenu : Model -> Html Msg
+viewLargeMenu ({ menuIsOpen, screenSize, userColor } as model) =
     Html.nav
         [ Attrs.css
             [ Css.height <| Css.pct 100
@@ -741,7 +862,7 @@ viewMenu ({ menuIsOpen, screenSize, userColor } as model) =
                         0
             ]
         ]
-        [ viewMmenuButton model
+        [ viewLargeMmenuButton model
         , Html.ul
             [ Attrs.css
                 [ Css.listStyle Css.none
@@ -753,21 +874,21 @@ viewMenu ({ menuIsOpen, screenSize, userColor } as model) =
                 [ menuItem <|
                     Html.button
                         [ Attrs.css <|
-                            defaultButtonStyle userColor screenSize
+                            buttonStyle userColor screenSize
                         , Events.onClick ShowColorPicker
                         ]
                         [ Html.text "Set Color" ]
                 , menuItem <|
                     Html.button
                         [ Attrs.css <|
-                            defaultButtonStyle userColor screenSize
+                            buttonStyle userColor screenSize
                         , Events.onClick ShowAbout
                         ]
                         [ Html.text "About" ]
                 , menuItem <|
                     Html.button
                         [ Attrs.css <|
-                            defaultButtonStyle userColor screenSize
+                            buttonStyle userColor screenSize
                         , Events.onClick AttemptPurge
                         ]
                         [ Html.text "Purge?" ]
@@ -787,8 +908,96 @@ menuItem child =
         [ child ]
 
 
-viewMmenuButton : Model -> Html Msg
-viewMmenuButton { menuIsOpen, showAbout, attemptPurge, showColorPicker } =
+viewSmallMmenuButton : Model -> Html Msg
+viewSmallMmenuButton { menuIsOpen, showAbout, attemptPurge, showColorPicker } =
+    Html.button
+        [ Attrs.css
+            [ Css.position Css.fixed
+            , Css.top <| Css.rem 3
+            , Css.right <| Css.rem 3
+            , Css.border <| Css.px 0
+            , Css.backgroundColor <| Css.rgba 0 0 0 0
+            , Css.marginLeft <| Css.rem -5
+            , Css.cursor Css.pointer
+            , Css.width <| Css.rem 4
+            , Css.height <| Css.rem 4
+            , Css.padding <| Css.rem 0
+            ]
+        , Events.onClick <| SetMenuOpen <| not menuIsOpen
+        , Attrs.disabled <| showAbout || attemptPurge || showColorPicker
+        ]
+    <|
+        if menuIsOpen then
+            [ Html.div
+                [ Attrs.css
+                    [ Css.width <| Css.rem 4
+                    , Css.height <| Css.rem 0.5
+                    , Css.borderRadius <| Css.rem 100
+                    , Css.backgroundColor <| Css.rgb 0 0 0
+                    , Css.transforms
+                        [ Css.translateY <| Css.rem 0.25
+                        , Css.rotate <| Css.deg 45
+                        ]
+                    ]
+                ]
+                []
+            , Html.div
+                [ Attrs.css
+                    [ Css.width <| Css.rem 4
+                    , Css.height <| Css.rem 0.5
+                    , Css.borderRadius <| Css.rem 100
+                    , Css.backgroundColor <| Css.rgb 0 0 0
+                    , Css.transforms
+                        [ Css.translateY <| Css.rem -0.25
+                        , Css.rotate <| Css.deg -45
+                        ]
+                    ]
+                ]
+                []
+            ]
+
+        else
+            [ Html.div
+                [ Attrs.css
+                    [ Css.width <| Css.rem 4
+                    , Css.height <| Css.rem 0.5
+                    , Css.borderRadius <| Css.rem 100
+                    , Css.backgroundColor <| Css.rgb 0 0 0
+                    , Css.transform <|
+                        Css.translateY <|
+                            Css.rem -0.5
+                    ]
+                ]
+                []
+            , Html.div
+                [ Attrs.css
+                    [ Css.width <| Css.rem 4
+                    , Css.height <| Css.rem 0.5
+                    , Css.borderRadius <| Css.rem 100
+                    , Css.backgroundColor <| Css.rgb 0 0 0
+                    , Css.transform <|
+                        Css.translateY <|
+                            Css.rem 0
+                    ]
+                ]
+                []
+            , Html.div
+                [ Attrs.css
+                    [ Css.width <| Css.rem 4
+                    , Css.height <| Css.rem 0.5
+                    , Css.borderRadius <| Css.rem 100
+                    , Css.backgroundColor <| Css.rgb 0 0 0
+                    , Css.transform <|
+                        Css.translateY <|
+                            Css.rem 0.5
+                    ]
+                ]
+                []
+            ]
+
+
+viewLargeMmenuButton : Model -> Html Msg
+viewLargeMmenuButton { menuIsOpen, showAbout, attemptPurge, showColorPicker } =
     Html.button
         [ Attrs.css
             [ Css.border <| Css.px 0
@@ -911,14 +1120,12 @@ viewModal userColor screenSize children =
             , Css.alignItems Css.center
             , Css.justifyContent Css.center
             , Css.fontFamily Css.sansSerif
+            , Css.overflowY Css.auto
             , Css.fontSize <|
                 Css.rem <|
                     case screenSize of
                         Large ->
                             1.2
-
-                        Medium ->
-                            2.2
 
                         Small ->
                             3.2
@@ -926,9 +1133,27 @@ viewModal userColor screenSize children =
         ]
         [ Html.div
             [ Attrs.css
-                [ Css.backgroundColor <| toCssColor userColor
-                , Css.padding <| Css.rem 1
-                , Css.maxWidth <| Css.rem 40
+                [ Css.backgroundColor <|
+                    case screenSize of
+                        Large ->
+                            toCssColor userColor
+
+                        Small ->
+                            secondaryColor
+                , Css.padding <|
+                    Css.rem <|
+                        case screenSize of
+                            Large ->
+                                1
+
+                            Small ->
+                                3
+                , case screenSize of
+                    Large ->
+                        Css.maxWidth <| Css.rem 40
+
+                    Small ->
+                        Css.maxWidth <| Css.pct 100
                 ]
             ]
             children
@@ -968,7 +1193,7 @@ If you'd like to see the code, it can be found at """
                 ]
                 [ Html.button
                     [ Attrs.css <|
-                        defaultButtonStyle userColor screenSize
+                        primaryButtonStyle userColor screenSize
                     , Events.onClick HideAbout
                     , Attrs.id "hideAboutButton"
                     ]
@@ -1015,13 +1240,13 @@ viewPurgeAttempt { attemptPurge, screenSize, userColor } =
                 ]
                 [ Html.button
                     [ Attrs.css
-                        (defaultButtonStyle userColor screenSize)
+                        (buttonStyle userColor screenSize)
                     , Events.onClick ExecutePurge
                     ]
                     [ Html.text "Purge" ]
                 , Html.button
                     [ Attrs.css
-                        (defaultButtonStyle userColor screenSize
+                        (primaryButtonStyle userColor screenSize
                             ++ [ Css.marginLeft <| Css.rem 1 ]
                         )
                     , Events.onClick CancelPurge
@@ -1035,26 +1260,105 @@ viewPurgeAttempt { attemptPurge, screenSize, userColor } =
         emptyHtml
 
 
-defaultButtonStyle : PrimaryColor -> ScreenSize -> List Css.Style
-defaultButtonStyle userColor screenSize =
+buttonStyle : PrimaryColor -> ScreenSize -> List Css.Style
+buttonStyle userColor screenSize =
     [ Css.fontSize <|
         Css.rem <|
             case screenSize of
                 Large ->
                     1.2
 
-                _ ->
-                    4
+                Small ->
+                    3
     , case screenSize of
         Large ->
             Css.padding2 (Css.rem 0.5) (Css.rem 1)
 
-        _ ->
+        Small ->
             Css.padding2 (Css.rem 2) (Css.rem 4)
-    , Css.backgroundColor secondaryColor
-    , Css.color <| toCssColor userColor
+    , Css.backgroundColor <|
+        case screenSize of
+            Large ->
+                toCssColor userColor
+
+            Small ->
+                secondaryColor
+    , Css.color <|
+        case screenSize of
+            Large ->
+                secondaryColor
+
+            Small ->
+                toCssColor userColor
     , Css.cursor Css.pointer
-    , Css.border3 (Css.px 1) Css.solid <| toCssColor userColor
+    , Css.border3
+        (Css.px <|
+            case screenSize of
+                Large ->
+                    1
+
+                Small ->
+                    4
+        )
+        Css.solid
+        (case screenSize of
+            Large ->
+                secondaryColor
+
+            Small ->
+                toCssColor userColor
+        )
+    ]
+
+
+primaryButtonStyle : PrimaryColor -> ScreenSize -> List Css.Style
+primaryButtonStyle userColor screenSize =
+    [ Css.fontSize <|
+        Css.rem <|
+            case screenSize of
+                Large ->
+                    1.2
+
+                Small ->
+                    3
+    , case screenSize of
+        Large ->
+            Css.padding2 (Css.rem 0.5) (Css.rem 1)
+
+        Small ->
+            Css.padding2 (Css.rem 2) (Css.rem 4)
+    , Css.backgroundColor <|
+        case screenSize of
+            Large ->
+                secondaryColor
+
+            Small ->
+                toCssColor userColor
+    , Css.color <|
+        case screenSize of
+            Large ->
+                toCssColor userColor
+
+            Small ->
+                secondaryColor
+    , Css.cursor Css.pointer
+    , Css.border3
+        (Css.px <|
+            case screenSize of
+                Large ->
+                    1
+
+                Small ->
+                    4
+        )
+        Css.solid
+        (case screenSize of
+            Large ->
+                toCssColor userColor
+
+            Small ->
+                secondaryColor
+        )
     ]
 
 
@@ -1084,7 +1388,7 @@ viewOldThought { currentZone, screenSize, finding } ( thought, createdAt ) =
                         Large ->
                             Css.width <| Css.rem 40
 
-                        _ ->
+                        Small ->
                             Css.width <| Css.pct 95
                     , Css.marginTop <| Css.rem 1
                     , Css.lastChild
@@ -1094,17 +1398,24 @@ viewOldThought { currentZone, screenSize, finding } ( thought, createdAt ) =
                                     Large ->
                                         40
 
-                                    Medium ->
-                                        15
-
                                     Small ->
-                                        20
+                                        60
                         ]
                     ]
                 ]
                 [ Html.div
                     [ Attrs.css
-                        [ Css.border3 (Css.px 1) Css.solid secondaryColor
+                        [ Css.border3
+                            (Css.px <|
+                                case screenSize of
+                                    Large ->
+                                        1
+
+                                    Small ->
+                                        4
+                            )
+                            Css.solid
+                            secondaryColor
                         , Css.padding <| Css.rem 1
                         ]
                     ]
@@ -1141,7 +1452,17 @@ viewOldThought { currentZone, screenSize, finding } ( thought, createdAt ) =
                                     ++ (String.padLeft 2 '0' <| String.fromInt minute)
                     , Html.div
                         [ Attrs.css
-                            [ Css.borderBottom3 (Css.px 1) Css.solid secondaryColor
+                            [ Css.borderBottom3
+                                (Css.px <|
+                                    case screenSize of
+                                        Large ->
+                                            1
+
+                                        Small ->
+                                            4
+                                )
+                                Css.solid
+                                secondaryColor
                             , Css.height <| Css.px 1
                             , Css.width <| Css.pct 100
                             ]
@@ -1243,12 +1564,16 @@ viewCurrentThought { screenSize, currentThought, finding, userColor, showAbout, 
                                     Large ->
                                         1
 
-                                    Medium ->
-                                        2
-
                                     Small ->
                                         3
-                        , Css.width <| Css.rem 30
+                        , Css.width <|
+                            Css.rem <|
+                                case screenSize of
+                                    Large ->
+                                        30
+
+                                    Small ->
+                                        40
                         , Css.padding <| Css.rem 1
                         ]
                     ]
@@ -1263,12 +1588,14 @@ viewCurrentThought { screenSize, currentThought, finding, userColor, showAbout, 
                     , Attrs.disabled modalIsOpen
                     , Attrs.css
                         [ Css.height <| Css.rem 5
-                        , case screenSize of
-                            Large ->
-                                Css.width <| Css.rem 30
+                        , Css.width <|
+                            Css.rem <|
+                                case screenSize of
+                                    Large ->
+                                        30
 
-                            _ ->
-                                Css.width <| Css.rem 40
+                                    Small ->
+                                        40
                         , Css.resize Css.none
                         , Css.fontFamily Css.sansSerif
                         , Css.fontSize <|
@@ -1276,9 +1603,6 @@ viewCurrentThought { screenSize, currentThought, finding, userColor, showAbout, 
                                 case screenSize of
                                     Large ->
                                         1
-
-                                    Medium ->
-                                        2
 
                                     Small ->
                                         3
@@ -1295,7 +1619,14 @@ viewCurrentThought { screenSize, currentThought, finding, userColor, showAbout, 
                 , Css.alignItems Css.flexEnd
                 , Css.justifyContent Css.spaceAround
                 , Css.property "justify-content" "space-evenly"
-                , Css.width <| Css.rem 10
+                , Css.width <|
+                    Css.rem <|
+                        case screenSize of
+                            Large ->
+                                10
+
+                            Small ->
+                                16
                 , Css.height <| Css.rem 10
                 ]
             ]
@@ -1307,28 +1638,44 @@ viewCurrentThought { screenSize, currentThought, finding, userColor, showAbout, 
                     [ Events.onClick StoreAndCreateThought
                     , Attrs.id "storeThoughtButton"
                     , Attrs.css <|
-                        defaultButtonStyle userColor screenSize
+                        primaryButtonStyle userColor screenSize
                     , Attrs.disabled <| String.isEmpty thought || modalIsOpen
                     ]
                     [ Html.text "Save" ]
-            , Html.button
-                [ Events.onClick <|
+            , case screenSize of
+                Large ->
+                    Html.button
+                        [ Events.onClick <|
+                            if showSearch then
+                                HideFind
+
+                            else
+                                ShowFind
+                        , Attrs.css <|
+                            buttonStyle userColor screenSize
+                        , Attrs.disabled modalIsOpen
+                        ]
+                        [ Html.text <|
+                            if showSearch then
+                                "Think"
+
+                            else
+                                "Search"
+                        ]
+
+                Small ->
                     if showSearch then
-                        HideFind
+                        Html.button
+                            [ Events.onClick HideFind
+                            , Attrs.css <|
+                                buttonStyle userColor screenSize
+                            , Attrs.disabled modalIsOpen
+                            ]
+                            [ Html.text "Think"
+                            ]
 
                     else
-                        ShowFind
-                , Attrs.css <|
-                    defaultButtonStyle userColor screenSize
-                , Attrs.disabled modalIsOpen
-                ]
-                [ Html.text <|
-                    if showSearch then
-                        "Think"
-
-                    else
-                        "Search"
-                ]
+                        emptyHtml
             ]
         ]
 
