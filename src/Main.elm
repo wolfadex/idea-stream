@@ -26,6 +26,11 @@ main =
         }
 
 
+appName : String
+appName =
+    "Notes to Self"
+
+
 
 ---- TYPES ----
 
@@ -40,6 +45,7 @@ type alias Model =
     , isVertical : Bool
     , finding : ( Bool, String )
     , currentTime : Posix
+    , menuIsOpen : Bool
     }
 
 
@@ -79,6 +85,7 @@ type Msg
     | HideFind
     | NewSearch String
     | TimeTick Posix
+    | SetMenuOpen Bool
 
 
 
@@ -94,7 +101,7 @@ init flags =
     ( { oldThoughts =
             case priorThoughts of
                 [] ->
-                    [ ( "Welcome to Idea Stream", now ) ]
+                    [ ( "Welcome to " ++ appName, now ) ]
 
                 _ ->
                     priorThoughts
@@ -106,6 +113,7 @@ init flags =
       , isVertical = height > width
       , finding = ( False, "" )
       , currentTime = now
+      , menuIsOpen = False
       }
     , Task.perform SetZone Time.here
     )
@@ -230,6 +238,9 @@ update msg model =
         NoOp ->
             ( model, Cmd.none )
 
+        SetMenuOpen open ->
+            ( { model | menuIsOpen = open }, Cmd.none )
+
         TimeTick time ->
             ( { model | currentTime = time }, Cmd.none )
 
@@ -239,7 +250,7 @@ update msg model =
             )
 
         HideFind ->
-            ( { model | finding = ( False, "" ) }, focusElement "thoughtBox" )
+            ( { model | finding = ( False, "" ) }, focusThoughtBox )
 
         NewSearch term ->
             ( { model | finding = ( True, term ) }, Cmd.none )
@@ -253,29 +264,32 @@ update msg model =
             ( { model | currentZone = Just zone }, Cmd.none )
 
         ShowAbout ->
-            ( { model | showAbout = True }
+            ( { model | showAbout = True, menuIsOpen = False }
             , focusElement "hideAboutButton"
             )
 
         HideAbout ->
-            ( { model | showAbout = False }, Cmd.none )
+            ( { model | showAbout = False }, focusThoughtBox )
 
         AttemptPurge ->
-            ( { model | attemptPurge = True }
+            ( { model | attemptPurge = True, menuIsOpen = False }
             , focusElement "cancelPurgeButton"
             )
 
         CancelPurge ->
-            ( { model | attemptPurge = False }, Cmd.none )
+            ( { model | attemptPurge = False }, focusThoughtBox )
 
         ExecutePurge ->
             ( { model | attemptPurge = False, oldThoughts = [], currentThought = ( "", Time.millisToPosix 0 ) }
-            , purgeThoughts ()
+            , Cmd.batch
+                [ purgeThoughts ()
+                , focusThoughtBox
+                ]
             )
 
         StartThought time ->
             ( { model | currentThought = ( "", time ) }
-            , focusElement "thoughtBox"
+            , focusThoughtBox
             )
 
         UpdateThought newContent ->
@@ -327,6 +341,11 @@ update msg model =
                 , scrollToCurrentThought
                 ]
             )
+
+
+focusThoughtBox : Cmd Msg
+focusThoughtBox =
+    focusElement "thoughtBox"
 
 
 startThought : Cmd Msg
@@ -389,7 +408,7 @@ darkColor =
 
 view : Model -> Document Msg
 view ({ screenSize, isVertical } as model) =
-    { title = "Note to Self"
+    { title = appName
     , body =
         [ Html.toUnstyled <|
             case screenSize of
@@ -450,7 +469,7 @@ viewApp ({ screenSize } as model) =
                     [ Css.color primaryColor
                     ]
                 ]
-                [ Html.text "Note to Self" ]
+                [ Html.text appName ]
             ]
         , Html.main_
             [ Attrs.css
@@ -459,48 +478,189 @@ viewApp ({ screenSize } as model) =
                 , Css.bottom <| Css.rem 0
                 , Css.left <| Css.rem 0
                 , Css.right <| Css.rem 0
-                ]
-            ]
-            [ viewThoughts model ]
-        , Html.footer
-            [ Attrs.css
-                [ Css.position Css.fixed
-                , Css.bottom <| Css.rem 0
-                , Css.width <| Css.pct 100
                 , Css.displayFlex
-                , Css.justifyContent Css.center
                 ]
             ]
-            [ viewCurrentThought model ]
+            [ Html.section
+                [ Attrs.css
+                    [ Css.flex <| Css.int 1
+                    , Css.height <| Css.pct 100
+                    , Css.displayFlex
+                    , Css.flexDirection Css.column
+                    ]
+                ]
+                [ viewThoughts model
+                , viewCurrentThought model
+                ]
+            , viewMenu model
+            ]
         , viewPurgeAttempt model
         , viewAbout model
         ]
 
 
+viewMenu : Model -> Html Msg
+viewMenu ({ menuIsOpen, screenSize } as model) =
+    Html.nav
+        [ Attrs.css
+            [ Css.height <| Css.pct 100
+            , Css.borderLeft3 (Css.px 1) Css.solid darkColor
+            , Css.displayFlex
+            , Css.flexDirection Css.columnReverse
+            , Css.width <|
+                Css.rem <|
+                    if menuIsOpen then
+                        10
 
--- [ Html.button
---     [ Attrs.css
---         (defaultButtonStyle screenSize
---             ++ [ Css.position Css.absolute
---                , Css.top <| Css.rem 1
---                , Css.right <| Css.rem 1
---                ]
---         )
---     , Events.onClick AttemptPurge
---     ]
---     [ Html.text "Purge?" ]
--- , Html.button
---     [ Attrs.css
---         (defaultButtonStyle screenSize
---             ++ [ Css.position Css.absolute
---                , Css.top <| Css.rem 1
---                , Css.left <| Css.rem 1
---                ]
---         )
---     , Events.onClick ShowAbout
---     ]
---     [ Html.text "About" ]
--- ]
+                    else
+                        0
+            ]
+        ]
+        [ viewMmenuButton model
+        , Html.ul
+            [ Attrs.css
+                [ Css.listStyle Css.none
+                , Css.paddingLeft <| Css.rem 1
+                ]
+            ]
+          <|
+            if menuIsOpen then
+                [ menuItem <|
+                    Html.button
+                        [ Attrs.css <|
+                            defaultButtonStyle screenSize
+                        , Events.onClick ShowAbout
+                        ]
+                        [ Html.text "About" ]
+                , menuItem <|
+                    Html.button
+                        [ Attrs.css <|
+                            defaultButtonStyle screenSize
+                        , Events.onClick AttemptPurge
+                        ]
+                        [ Html.text "Purge?" ]
+                ]
+
+            else
+                []
+        ]
+
+
+menuItem : Html Msg -> Html Msg
+menuItem child =
+    Html.li
+        [ Attrs.css
+            [ Css.marginTop <| Css.rem 1 ]
+        ]
+        [ child ]
+
+
+viewMmenuButton : Model -> Html Msg
+viewMmenuButton { menuIsOpen } =
+    Html.button
+        [ Attrs.css
+            [ Css.border <| Css.px 0
+            , Css.backgroundColor <| Css.rgba 0 0 0 0
+            , Css.position Css.fixed
+            , Css.marginLeft <| Css.rem -5
+            , Css.bottom <| Css.rem 1
+            , Css.cursor Css.pointer
+            , Css.width <| Css.rem 3
+            , Css.height <| Css.rem 3
+            , Css.padding <| Css.rem 0
+            ]
+        , Events.onClick <| SetMenuOpen <| not menuIsOpen
+        ]
+    <|
+        if menuIsOpen then
+            [ Html.div
+                [ Attrs.css
+                    [ Css.width <| Css.rem 3
+                    , Css.height <| Css.rem 0.5
+                    , Css.borderRadius <| Css.rem 100
+                    , Css.backgroundColor <| Css.rgb 0 0 0
+                    , Css.transforms
+                        [ Css.translateY <| Css.rem 0.25
+                        , Css.rotate <| Css.deg 45
+                        ]
+                    ]
+                ]
+                []
+            , Html.div
+                [ Attrs.css
+                    [ Css.width <| Css.rem 3
+                    , Css.height <| Css.rem 0.5
+                    , Css.borderRadius <| Css.rem 100
+                    , Css.backgroundColor <| Css.rgb 0 0 0
+                    , Css.transforms
+                        [ Css.translateY <| Css.rem -0.25
+                        , Css.rotate <| Css.deg -45
+                        ]
+                    ]
+                ]
+                []
+            ]
+
+        else
+            [ Html.div
+                [ Attrs.css
+                    [ Css.width <| Css.rem 3
+                    , Css.height <| Css.rem 0.5
+                    , Css.borderRadius <| Css.rem 100
+                    , Css.backgroundColor <| Css.rgb 0 0 0
+                    , Css.transform <|
+                        Css.translateY <|
+                            Css.rem -0.25
+                    ]
+                ]
+                []
+            , Html.div
+                [ Attrs.css
+                    [ Css.width <| Css.rem 3
+                    , Css.height <| Css.rem 0.5
+                    , Css.borderRadius <| Css.rem 100
+                    , Css.backgroundColor <| Css.rgb 0 0 0
+                    , Css.transform <|
+                        Css.translateY <|
+                            Css.rem 0
+                    ]
+                ]
+                []
+            , Html.div
+                [ Attrs.css
+                    [ Css.width <| Css.rem 3
+                    , Css.height <| Css.rem 0.5
+                    , Css.borderRadius <| Css.rem 100
+                    , Css.backgroundColor <| Css.rgb 0 0 0
+                    , Css.transform <|
+                        Css.translateY <|
+                            Css.rem 0.25
+                    ]
+                ]
+                []
+            ]
+
+
+viewThoughts : Model -> Html Msg
+viewThoughts ({ oldThoughts } as model) =
+    KeyedHtml.ul
+        [ Attrs.css
+            [ Css.displayFlex
+            , Css.flexDirection Css.columnReverse
+            , Css.width <| Css.pct 100
+            , Css.listStyle Css.none
+            , Css.padding <| Css.px 0
+            , Css.alignItems Css.center
+            , Css.flex <| Css.int 1
+            , Css.margin <| Css.rem 0
+            , Css.height <| Css.pct 100
+            , Css.overflowY Css.auto
+            ]
+        , Attrs.id "thoughtList"
+        ]
+        (oldThoughts
+            |> List.filterMap (viewOldThought model)
+        )
 
 
 viewModal : ScreenSize -> List (Html Msg) -> Html Msg
@@ -665,28 +825,6 @@ backgroundGradient =
     Css.backgroundImage <| Css.linearGradient (Css.stop secondaryColor) (Css.stop primaryColor) []
 
 
-viewThoughts : Model -> Html Msg
-viewThoughts ({ oldThoughts } as model) =
-    KeyedHtml.ul
-        [ Attrs.css
-            [ Css.displayFlex
-            , Css.flexDirection Css.columnReverse
-            , Css.width <| Css.pct 100
-            , Css.listStyle Css.none
-            , Css.padding <| Css.px 0
-            , Css.alignItems Css.center
-            , Css.flex <| Css.int 1
-            , Css.margin <| Css.rem 0
-            , Css.height <| Css.pct 100
-            , Css.overflowY Css.auto
-            ]
-        , Attrs.id "thoughtList"
-        ]
-        (oldThoughts
-            |> List.filterMap (viewOldThought model)
-        )
-
-
 viewOldThought : Model -> ( Thought, Posix ) -> Maybe ( String, Html msg )
 viewOldThought { currentZone, screenSize, finding } ( thought, createdAt ) =
     let
@@ -723,19 +861,6 @@ viewOldThought { currentZone, screenSize, finding } ( thought, createdAt ) =
 
                                     Small ->
                                         20
-                        ]
-                    , Css.firstChild
-                        [ Css.paddingBottom <|
-                            Css.rem <|
-                                case screenSize of
-                                    Large ->
-                                        10
-
-                                    Medium ->
-                                        10
-
-                                    Small ->
-                                        10
                         ]
                     ]
                 ]
@@ -853,12 +978,7 @@ viewCurrentThought { screenSize, currentThought, finding } =
             , Css.displayFlex
             , Css.alignItems Css.center
             , Css.justifyContent Css.center
-            , case screenSize of
-                Large ->
-                    Css.width <| Css.rem 40
-
-                _ ->
-                    Css.width <| Css.pct 100
+            , Css.width <| Css.pct 100
             ]
         ]
         [ Html.section
