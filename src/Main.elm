@@ -1176,12 +1176,12 @@ viewAbout { showAbout, screenSize, userColor } =
 All thoughts are stored in localStorage (in your browser).
 There's a button to purge all imformation, because the data is yours and only yours.
 
-If you'd like to see the code, it can be found at """
+If you'd like to see the code, it can be found on """
                     , Html.a
                         [ Attrs.href "https://github.com/wolfadex/idea-stream"
                         , Attrs.target "_blank"
                         ]
-                        [ Html.text "idea-stream on GitHub" ]
+                        [ Html.text "GitHub" ]
                     , Html.text "."
                     ]
                 ]
