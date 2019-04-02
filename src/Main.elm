@@ -5,7 +5,6 @@ import Browser.Dom as Dom
 import Browser.Events exposing (onAnimationFrameDelta, onKeyDown, onResize)
 import Css
 import Css.Transitions as Transitions
-import Debug
 import Dict exposing (Dict)
 import Html.Styled as Html exposing (Html)
 import Html.Styled.Attributes as Attrs
@@ -91,7 +90,7 @@ init : Value -> ( Model, Cmd Msg )
 init flags =
     let
         { priorThoughts, now, width, height } =
-            Debug.log "init" <| flagsDecoder flags
+            flagsDecoder flags
     in
     ( { oldThoughts =
             case priorThoughts of
@@ -118,14 +117,10 @@ init flags =
 
 calculateScreenSize : Int -> ScreenSize
 calculateScreenSize width =
-    let
-        carl =
-            Debug.log "width" width
-    in
-    if carl > 1200 then
+    if width > 1200 then
         Large
 
-    else if carl > 900 then
+    else if width > 900 then
         Medium
 
     else
@@ -244,11 +239,7 @@ update msg model =
             ( model, Cmd.none )
 
         UpdateSizeAndOrientation width height ->
-            let
-                nextSize =
-                    Debug.log "nextSize" <| calculateScreenSize width
-            in
-            ( { model | screenSize = nextSize, isVertical = height > width }
+            ( { model | screenSize = calculateScreenSize width, isVertical = height > width }
             , Cmd.none
             )
 
