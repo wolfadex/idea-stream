@@ -394,13 +394,7 @@ update msg model =
         ShowColorPicker ->
             ( { model
                 | showColorPicker = True
-                , menuIsOpen =
-                    case model.screenSize of
-                        Large ->
-                            False
-
-                        Small ->
-                            True
+                , menuIsOpen = False
               }
             , focusElement "hideColorPickerButton"
             )
@@ -450,13 +444,7 @@ update msg model =
         ShowAbout ->
             ( { model
                 | showAbout = True
-                , menuIsOpen =
-                    case model.screenSize of
-                        Large ->
-                            False
-
-                        Small ->
-                            True
+                , menuIsOpen = False
               }
             , focusElement "hideAboutButton"
             )
@@ -467,13 +455,7 @@ update msg model =
         AttemptPurge ->
             ( { model
                 | attemptPurge = True
-                , menuIsOpen =
-                    case model.screenSize of
-                        Large ->
-                            False
-
-                        Small ->
-                            True
+                , menuIsOpen = False
               }
             , focusElement "cancelPurgeButton"
             )
