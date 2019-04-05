@@ -1,7 +1,12 @@
 .DS_Store
 
+.idea
+
 elm-stuff
 node_modules
-dist
+public
+.firebase
 
 yarn-error.log
+
+.env.json

@@ -4,8 +4,6 @@ import Browser exposing (Document)
 import Browser.Dom as Dom
 import Browser.Events exposing (onAnimationFrame, onKeyDown, onResize)
 import Css
-import Css.Transitions as Transitions
-import Dict exposing (Dict)
 import Html.Styled as Html exposing (Html)
 import Html.Styled.Attributes as Attrs
 import Html.Styled.Events as Events
@@ -31,12 +29,22 @@ appName =
     "Notes to Self"
 
 
+appNamePersonalized : Maybe User -> String
+appNamePersonalized maybeUser =
+    case maybeUser of
+        Nothing ->
+            appName
+
+        Just { displayName } ->
+            "Notes to " ++ displayName
+
+
 
 ---- TYPES ----
 
 
 type alias Model =
-    { oldThoughts : List ( Thought, Posix )
+    { oldThoughts : Maybe (List ( Thought, Posix ))
     , currentThought : ( Thought, Posix )
     , attemptPurge : Bool
     , showAbout : Bool
@@ -47,6 +55,14 @@ type alias Model =
     , menuIsOpen : Bool
     , userColor : PrimaryColor
     , showColorPicker : Bool
+    , showAuth : Bool
+    , user : Maybe User
+    }
+
+
+type alias User =
+    { uid : String
+    , displayName : String
     }
 
 
@@ -55,10 +71,8 @@ type alias Thought =
 
 
 type alias Flags =
-    { priorThoughts : List ( Thought, Posix )
-    , now : Posix
+    { now : Posix
     , width : Int
-    , colorChoice : PrimaryColor
     }
 
 
@@ -89,6 +103,11 @@ type Msg
     | SetUserColor PrimaryColor
     | ShowColorPicker
     | HideColorPicker
+    | ShowAuth
+    | HideAuth
+    | UpdateUser (Maybe User)
+    | Logout
+    | ThoughtsLoaded (List ( Thought, Posix ))
 
 
 type PrimaryColor
@@ -202,16 +221,16 @@ primaryColorToString pColor =
 init : Value -> ( Model, Cmd Msg )
 init flags =
     let
-        { priorThoughts, now, width, colorChoice } =
+        { now, width } =
             flagsDecoder flags
     in
-    ( { oldThoughts =
-            case priorThoughts of
-                [] ->
-                    [ ( "Welcome to \"" ++ appName ++ "\"", now ) ]
+    ( { oldThoughts = Nothing
 
-                _ ->
-                    priorThoughts
+      -- case priorThoughts of
+      --     [] ->
+      --         [ ( "Welcome to \"" ++ appName ++ "\"", now ) ]
+      --     _ ->
+      --         priorThoughts
       , currentThought = ( "", now )
       , attemptPurge = False
       , showAbout = False
@@ -220,8 +239,10 @@ init flags =
       , finding = ( False, "" )
       , currentTime = now
       , menuIsOpen = False
-      , userColor = colorChoice
+      , userColor = Green
       , showColorPicker = False
+      , showAuth = False
+      , user = Nothing
       }
     , Task.perform SetZone Time.here
     )
@@ -243,68 +264,61 @@ flagsDecoder val =
             flags
 
         Err _ ->
-            { priorThoughts = []
-            , now = Time.millisToPosix 0
+            { now = Time.millisToPosix 0
             , width = 0
-            , colorChoice = Green
             }
 
 
 decodeFlags : Decoder Flags
 decodeFlags =
-    Decode.map4
-        (\maybeThoughts now width maybeColor ->
-            { priorThoughts = Maybe.withDefault [] maybeThoughts
-            , now = Time.millisToPosix now
+    Decode.map2
+        (\now width ->
+            { now = Time.millisToPosix now
             , width = width
-            , colorChoice = Maybe.withDefault Green maybeColor
             }
         )
-        (Decode.maybe (Decode.field "priorThoughts" (Decode.list decodeThought)))
         (Decode.field "now" Decode.int)
         (Decode.field "width" Decode.int)
-        (Decode.maybe (Decode.field "colorChoice" Decode.string |> Decode.andThen decodeColor))
 
 
-decodeColor : String -> Decoder PrimaryColor
-decodeColor str =
-    Decode.succeed <|
-        case str of
-            "Blue" ->
-                Blue
+stringToColor : String -> PrimaryColor
+stringToColor str =
+    case str of
+        "Blue" ->
+            Blue
 
-            "Aqua" ->
-                Aqua
+        "Aqua" ->
+            Aqua
 
-            "Teal" ->
-                Teal
+        "Teal" ->
+            Teal
 
-            "Olive" ->
-                Olive
+        "Olive" ->
+            Olive
 
-            "Green" ->
-                Green
+        "Green" ->
+            Green
 
-            "Orange" ->
-                Orange
+        "Orange" ->
+            Orange
 
-            "Red" ->
-                Red
+        "Red" ->
+            Red
 
-            "Maroon" ->
-                Maroon
+        "Maroon" ->
+            Maroon
 
-            "Fuchsia" ->
-                Fuchsia
+        "Fuchsia" ->
+            Fuchsia
 
-            "Purple" ->
-                Purple
+        "Purple" ->
+            Purple
 
-            "Gray" ->
-                Gray
+        "Gray" ->
+            Gray
 
-            _ ->
-                Green
+        _ ->
+            Green
 
 
 decodeThought : Decoder ( Thought, Posix )
@@ -328,6 +342,9 @@ subscriptions _ =
         , onKeyDown decodeKeyDown
         , onAnimationFrame TimeTick
         , onResize UpdateSizeAndOrientation
+        , userAuthChange decodeUserAuthChange
+        , receivedThoughts decodeThoughtReceived
+        , receivedColor <| stringToColor >> SetUserColor
         ]
 
 
@@ -359,12 +376,45 @@ keyDownToMsg key ctrlDown isRepeat =
 -- OUTGOING
 
 
-port writeThoughts : Value -> Cmd msg
+port purgeThoughts : String -> Cmd msg
 
 
-writeThoughtsToDisk : List ( Thought, Posix ) -> Cmd msg
-writeThoughtsToDisk thoughts =
-    writeThoughts <| Encode.list encodeThought thoughts
+port saveColorChoice : Value -> Cmd msg
+
+
+writeColorToServer : Maybe User -> String -> Cmd msg
+writeColorToServer maybeUser color =
+    saveColorChoice <|
+        Encode.object
+            [ ( "color", Encode.string color )
+            , ( "userId"
+              , Encode.string <|
+                    case maybeUser of
+                        Nothing ->
+                            ""
+
+                        Just { uid } ->
+                            uid
+              )
+            ]
+
+
+port logout : () -> Cmd msg
+
+
+port requestThoughts : String -> Cmd msg
+
+
+port writeThought : Value -> Cmd msg
+
+
+writeThoughtToServer : String -> ( Thought, Posix ) -> Cmd msg
+writeThoughtToServer userId thought =
+    writeThought <|
+        Encode.object
+            [ ( "thought", encodeThought thought )
+            , ( "userId", Encode.string userId )
+            ]
 
 
 encodeThought : ( Thought, Posix ) -> Value
@@ -375,10 +425,44 @@ encodeThought ( thought, time ) =
         ]
 
 
-port purgeThoughts : () -> Cmd msg
+
+-- INCOMING
 
 
-port saveColorChoice : String -> Cmd msg
+port userAuthChange : (Value -> msg) -> Sub msg
+
+
+decodeUserAuthChange : Value -> Msg
+decodeUserAuthChange val =
+    case Decode.decodeValue userDecoder val of
+        Ok user ->
+            UpdateUser (Just user)
+
+        Err _ ->
+            UpdateUser Nothing
+
+
+userDecoder : Decoder User
+userDecoder =
+    Decode.map2 User
+        (Decode.field "uid" Decode.string)
+        (Decode.field "displayName" Decode.string)
+
+
+port receivedThoughts : (Value -> msg) -> Sub msg
+
+
+decodeThoughtReceived : Value -> Msg
+decodeThoughtReceived val =
+    case Decode.decodeValue (Decode.list decodeThought) val of
+        Ok thoughts ->
+            ThoughtsLoaded thoughts
+
+        Err _ ->
+            NoOp
+
+
+port receivedColor : (String -> msg) -> Sub msg
 
 
 
@@ -390,6 +474,39 @@ update msg model =
     case msg of
         NoOp ->
             ( model, Cmd.none )
+
+        ThoughtsLoaded thoughts ->
+            ( { model | oldThoughts = Just thoughts }, Cmd.none )
+
+        Logout ->
+            ( { model | menuIsOpen = False }, logout () )
+
+        UpdateUser maybeUser ->
+            case maybeUser of
+                Nothing ->
+                    ( { model | user = maybeUser, oldThoughts = Nothing, showAuth = False }
+                    , Cmd.none
+                    )
+
+                Just user ->
+                    ( { model | user = maybeUser, showAuth = False }
+                    , requestThoughts user.uid
+                    )
+
+        ShowAuth ->
+            ( { model
+                | showAuth = True
+                , menuIsOpen = False
+              }
+            , Cmd.none
+            )
+
+        HideAuth ->
+            ( { model
+                | showAuth = False
+              }
+            , focusThoughtBox
+            )
 
         ShowColorPicker ->
             ( { model
@@ -404,7 +521,7 @@ update msg model =
 
         SetUserColor color ->
             ( { model | userColor = color }
-            , saveColorChoice <| primaryColorToString color
+            , writeColorToServer model.user <| primaryColorToString color
             )
 
         SetMenuOpen open ->
@@ -464,9 +581,14 @@ update msg model =
             ( { model | attemptPurge = False }, focusThoughtBox )
 
         ExecutePurge ->
-            ( { model | attemptPurge = False, oldThoughts = [], currentThought = ( "", Time.millisToPosix 0 ) }
+            ( { model | attemptPurge = False, oldThoughts = Just [], currentThought = ( "", Time.millisToPosix 0 ) }
             , Cmd.batch
-                [ purgeThoughts ()
+                [ case model.user of
+                    Nothing ->
+                        Cmd.none
+
+                    Just { uid } ->
+                        purgeThoughts uid
                 , focusThoughtBox
                 ]
             )
@@ -501,12 +623,12 @@ update msg model =
             in
             if Time.posixToMillis now - Time.posixToMillis time > (5 * 60 * 1000) then
                 let
-                    nextModel =
+                    ( nextModel, storeCommand ) =
                         storeThought model
                 in
                 ( nextModel
                 , Cmd.batch
-                    [ writeThoughtsToDisk nextModel.oldThoughts
+                    [ storeCommand
                     , scrollToCurrentThought
                     ]
                 )
@@ -516,12 +638,12 @@ update msg model =
 
         StoreAndCreateThought ->
             let
-                nextModel =
+                ( nextModel, storeCommand ) =
                     storeThought model
             in
             ( nextModel
             , Cmd.batch
-                [ writeThoughtsToDisk nextModel.oldThoughts
+                [ storeCommand
                 , scrollToCurrentThought
                 , focusThoughtBox
                 ]
@@ -531,11 +653,6 @@ update msg model =
 focusThoughtBox : Cmd Msg
 focusThoughtBox =
     focusElement "thoughtBox"
-
-
-startThought : Cmd Msg
-startThought =
-    Task.perform StartThought Time.now
 
 
 scrollToCurrentThought : Cmd Msg
@@ -550,8 +667,8 @@ focusElement id =
     Task.attempt (\_ -> NoOp) (Dom.focus id)
 
 
-storeThought : Model -> Model
-storeThought ({ currentThought, currentTime } as model) =
+storeThought : Model -> ( Model, Cmd Msg )
+storeThought ({ currentThought, currentTime, user } as model) =
     let
         ( thought, t ) =
             currentThought
@@ -561,15 +678,31 @@ storeThought ({ currentThought, currentTime } as model) =
 
         newThought =
             ( "", currentTime )
+
+        userId =
+            case user of
+                Nothing ->
+                    ""
+
+                Just { uid } ->
+                    uid
     in
     if String.length trimmedThought < 1 then
-        { model | currentThought = newThought }
+        ( { model | currentThought = newThought }, Cmd.none )
 
     else
-        { model
+        ( { model
             | currentThought = newThought
-            , oldThoughts = ( trimmedThought, t ) :: model.oldThoughts
-        }
+            , oldThoughts =
+                case model.oldThoughts of
+                    Nothing ->
+                        Just [ ( trimmedThought, t ) ]
+
+                    Just oldThoughts ->
+                        Just <| ( trimmedThought, t ) :: oldThoughts
+          }
+        , writeThoughtToServer userId ( trimmedThought, t )
+        )
 
 
 
@@ -593,22 +726,17 @@ darkColor =
 
 
 view : Model -> Document Msg
-view ({ screenSize } as model) =
-    { title = appName
+view model =
+    { title = appNamePersonalized model.user
     , body =
         [ Html.toUnstyled <|
-            case screenSize of
-                Small ->
-                    viewApp model
-
-                Large ->
-                    viewApp model
+            viewApp model
         ]
     }
 
 
 viewApp : Model -> Html Msg
-viewApp ({ screenSize, userColor } as model) =
+viewApp ({ screenSize, userColor, user } as model) =
     Html.div
         [ Attrs.css
             [ Css.fontSize <|
@@ -655,7 +783,7 @@ viewApp ({ screenSize, userColor } as model) =
                     [ Css.color <| toCssColor userColor
                     ]
                 ]
-                [ Html.text appName ]
+                [ Html.text <| appNamePersonalized user ]
             , case screenSize of
                 Small ->
                     viewSmallMenu model
@@ -694,7 +822,28 @@ viewApp ({ screenSize, userColor } as model) =
         , viewPurgeAttempt model
         , viewAbout model
         , viewColorPicker model
+        , viewAuth model
         ]
+
+
+viewAuth : Model -> Html Msg
+viewAuth { showAuth, userColor, screenSize } =
+    if showAuth then
+        viewModal userColor
+            screenSize
+            [ Html.node "firebase-auth"
+                [ Attrs.id "authElement" ]
+                []
+            , Html.button
+                [ Attrs.css <|
+                    primaryButtonStyle userColor screenSize
+                , Events.onClick HideAuth
+                ]
+                [ Html.text "Don't Sign In" ]
+            ]
+
+    else
+        emptyHtml
 
 
 viewColorPicker : Model -> Html Msg
@@ -816,7 +965,7 @@ viewSmallMenu ({ menuIsOpen, screenSize, userColor } as model) =
 
 
 viewLargeMenu : Model -> Html Msg
-viewLargeMenu ({ menuIsOpen, screenSize, userColor } as model) =
+viewLargeMenu ({ menuIsOpen, screenSize, userColor, user } as model) =
     Html.nav
         [ Attrs.css
             [ Css.height <| Css.pct 100
@@ -842,6 +991,26 @@ viewLargeMenu ({ menuIsOpen, screenSize, userColor } as model) =
           <|
             if menuIsOpen then
                 [ menuItem <|
+                    Html.button
+                        [ Attrs.css <|
+                            buttonStyle userColor screenSize
+                        , Events.onClick <|
+                            case user of
+                                Nothing ->
+                                    ShowAuth
+
+                                Just _ ->
+                                    Logout
+                        ]
+                        [ Html.text <|
+                            case user of
+                                Nothing ->
+                                    "Sign In"
+
+                                Just _ ->
+                                    "Logout"
+                        ]
+                , menuItem <|
                     Html.button
                         [ Attrs.css <|
                             buttonStyle userColor screenSize
@@ -879,7 +1048,7 @@ menuItem child =
 
 
 viewSmallMmenuButton : Model -> Html Msg
-viewSmallMmenuButton { menuIsOpen, showAbout, attemptPurge, showColorPicker } =
+viewSmallMmenuButton { menuIsOpen, showAbout, attemptPurge, showColorPicker, showAuth } =
     Html.button
         [ Attrs.css
             [ Css.position Css.fixed
@@ -894,7 +1063,7 @@ viewSmallMmenuButton { menuIsOpen, showAbout, attemptPurge, showColorPicker } =
             , Css.padding <| Css.rem 0
             ]
         , Events.onClick <| SetMenuOpen <| not menuIsOpen
-        , Attrs.disabled <| showAbout || attemptPurge || showColorPicker
+        , Attrs.disabled <| showAbout || attemptPurge || showColorPicker || showAuth
         ]
     <|
         if menuIsOpen then
@@ -967,7 +1136,7 @@ viewSmallMmenuButton { menuIsOpen, showAbout, attemptPurge, showColorPicker } =
 
 
 viewLargeMmenuButton : Model -> Html Msg
-viewLargeMmenuButton { menuIsOpen, showAbout, attemptPurge, showColorPicker } =
+viewLargeMmenuButton { menuIsOpen, showAbout, attemptPurge, showColorPicker, showAuth } =
     Html.button
         [ Attrs.css
             [ Css.border <| Css.px 0
@@ -981,7 +1150,7 @@ viewLargeMmenuButton { menuIsOpen, showAbout, attemptPurge, showColorPicker } =
             , Css.padding <| Css.rem 0
             ]
         , Events.onClick <| SetMenuOpen <| not menuIsOpen
-        , Attrs.disabled <| showAbout || attemptPurge || showColorPicker
+        , Attrs.disabled <| showAbout || attemptPurge || showColorPicker || showAuth
         ]
     <|
         if menuIsOpen then
@@ -1071,6 +1240,7 @@ viewThoughts ({ oldThoughts } as model) =
         , Attrs.id "thoughtList"
         ]
         (oldThoughts
+            |> Maybe.withDefault []
             |> List.filterMap (viewOldThought model)
         )
 
@@ -1143,8 +1313,14 @@ viewAbout { showAbout, screenSize, userColor } =
                     []
                     [ Html.text """A simple app for storing thoughts.
 
-All thoughts are stored in localStorage (in your browser).
-There's a button to purge all imformation, because the data is yours and only yours.
+All thoughts are stored in the cloud ("""
+                    , Html.a
+                        [ Attrs.href "https://firebase.google.com/"
+                        , Attrs.target "_blank"
+                        ]
+                        [ Html.text "Firebase" ]
+                    , Html.text """ to be exact) so you can access them on any device.
+There's also a button to purge all imformation, because the data is yours to control.
 
 If you'd like to see the code, it can be found on """
                     , Html.a
@@ -1493,7 +1669,7 @@ stringFromMonth month =
 
 
 viewCurrentThought : Model -> Html Msg
-viewCurrentThought { screenSize, currentThought, finding, userColor, showAbout, attemptPurge, showColorPicker } =
+viewCurrentThought { screenSize, currentThought, finding, userColor, showAbout, attemptPurge, showColorPicker, showAuth } =
     let
         ( showSearch, searchTerms ) =
             finding
@@ -1502,7 +1678,7 @@ viewCurrentThought { screenSize, currentThought, finding, userColor, showAbout, 
             currentThought
 
         modalIsOpen =
-            showAbout || attemptPurge || showColorPicker
+            showAbout || attemptPurge || showColorPicker || showAuth
     in
     Html.section
         [ Attrs.css

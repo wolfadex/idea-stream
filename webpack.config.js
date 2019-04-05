@@ -6,11 +6,11 @@ module.exports = ({ prod } = {}) => {
   return {
     mode: prod ? 'production' : 'development',
     node: {
-      fs: 'empty'
+      fs: 'empty',
     },
     entry: path.join(__dirname, 'src', 'index.js'),
     output: {
-      path: path.join(__dirname, 'dist'),
+      path: path.join(__dirname, 'public'),
       filename: 'bundle.js',
     },
     module: {

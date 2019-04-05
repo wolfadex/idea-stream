@@ -1,7 +1,8 @@
 {
   "scripts": {
     "dev": "webpack-dev-server",
-    "build": "webpack --env.prod=true"
+    "build": "webpack --env.prod=true",
+    "deploy": "yarn build && firebase deploy"
   },
   "devDependencies": {
     "@babel/core": "^7.4.0",
@@ -16,6 +17,7 @@
     "webpack-dev-server": "^3.2.1"
   },
   "dependencies": {
-    "bugout": "^0.0.8"
+    "firebase": "^5.9.2",
+    "firebaseui": "^3.5.2"
   }
 }
